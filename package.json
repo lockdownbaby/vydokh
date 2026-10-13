@@ -1,0 +1,12 @@
+{
+  "name": "vydokh-pwa",
+  "version": "1.2.0",
+  "private": true,
+  "type": "module",
+  "description": "«Выдох» — персональная PWA-поддержка на пути к отказу от никотина: дыхательные практики, прогресс и библиотека помощи.",
+  "scripts": {
+    "check": "node --check src/app.js && node --check src/storage.js && node --check src/domain.js && node --check src/content.js && node --check src/icons.js && node --check sw.js && node -e \"JSON.parse(require('fs').readFileSync('manifest.webmanifest', 'utf8'))\"",
+    "serve": "python3 -m http.server 8000",
+    "test": "node --test"
+  }
+}
