@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100" fill="none" role="img" aria-label="Выдох — знак волны">
+  <defs>
+    <linearGradient id="wave" x1="17" y1="16" x2="84" y2="78" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#A7EBD5"/>
+      <stop offset=".48" stop-color="#48D9C2"/>
+      <stop offset="1" stop-color="#139B9C"/>
+    </linearGradient>
+    <filter id="softGlow" x="-30%" y="-30%" width="160%" height="160%">
+      <feGaussianBlur stdDeviation="1.2" result="blur"/>
+      <feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+  <g stroke="url(#wave)" stroke-linecap="round" stroke-linejoin="round" filter="url(#softGlow)">
+    <path d="M21.5 54.5C20.3 34.9 35.7 17.6 54.8 17.1 70.9 16.7 82.7 28.3 85.3 43.6" stroke-width="3.5"/>
+    <path d="M21.8 61.2C26.3 75.6 40.1 84.1 55.2 82.8 69.7 81.5 80.3 72.3 84.1 59.6" stroke-width="3.5"/>
+    <path d="M15.8 47.5C27.6 40.6 36 42.8 45.6 47.2 56.3 52.2 66.2 51.9 83.7 39.1" stroke-width="4.8"/>
+    <path d="M16.9 55.8C28.5 49.1 36.7 51.5 46.6 56.1 57.7 61.2 67 60.6 83.1 48.3" stroke-width="4.8"/>
+    <path d="M23.5 64.8C34.2 59.1 41 61.1 50.4 65.2 60.5 69.6 70 67.5 80.3 58.2" stroke-width="4.5"/>
+  </g>
+</svg>

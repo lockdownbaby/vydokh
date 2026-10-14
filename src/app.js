@@ -1,5 +1,6 @@
 import { icon } from './icons.js';
-import { PRACTICES, TIP_CATEGORIES, TIP_LEVELS, TIP_SITUATIONS, TIPS, REASONS, MILESTONES } from './content.js';
+import { createBreathVisual } from './breath-visual.js';
+import { PRACTICES, PRACTICE_CATEGORIES, TIP_CATEGORIES, TIP_LEVELS, TIP_SITUATIONS, TIPS, REASONS, MILESTONES, HOME_TIPS } from './content.js';
 import { loadState, saveState, STORAGE_KEY, createDefaultState, exportBundle, importBundle } from './storage.js';
 import { addDays, dateISO, formatLongDate, formatShortDate, formatMoney, formatDuration, getBestStreak, getCleanDays, getLog, getSavings, getStatus, getStreak, getWeeklyStats, MONTHS_NOM, MONTHS, WEEKDAYS, plural, prettyUnit, getUnitLabel, clamp, getWeekStartISO, getWeeklyReviewMetrics, hasReportedUseOnDate, hasRecordedMeasurement, getProgressAnalytics, getPracticeAnalytics } from './domain.js';
 
@@ -9,20 +10,39 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp
 const root = $('#app');
 const today = () => dateISO();
 
+function applyTheme() {
+  const preference = state?.preferences?.theme || 'light';
+  const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches === true;
+  const resolved = preference === 'system' ? (systemDark ? 'dark' : 'light') : preference;
+  document.documentElement.dataset.theme = resolved;
+  document.documentElement.style.colorScheme = resolved;
+  const themeColor = resolved === 'dark' ? '#071714' : '#f4f6f0';
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor);
+}
+
 const loaded = loadState();
 let state = loaded.state;
 if (loaded.migrated) {
   try { saveState(state); } catch (_) { /* keep migrated state in memory; legacy key remains untouched */ }
 }
 let activeTab = 'today';
+let profileSubpage = 'main';
 let lastRenderedTab = null;
 let tipCategory = 'all';
 let tipSearch = '';
 let tipLevel = 'all';
 let tipSituation = 'all';
 let practiceFavoritesOnly = false;
+let practiceCategory = 'all';
+const breathVisualInstances = new Map();
 let selectedCalendarMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
 let overlay = null;
+let lastOverlayKey = '';
+let healthMenuOpen = false;
+let homeStatsRange = 'today';
+let healthCheckinDate = today();
+let homeTipTimer = null;
+let lastHomeTipId = '';
 let toastTimer = null;
 let practiceTimer = null;
 let cravingTimer = null;
@@ -56,6 +76,32 @@ const ACTION_OPTIONS = [
   ['support', 'Связаться с близким / специалистом'], ['none', 'Пока ничего не выбрал(а)'],
 ];
 const OUTCOME_OPTIONS = [['easier', 'Стало легче'], ['same', 'Почти без изменений'], ['stronger', 'Тяга усилилась']];
+const HEALTH_TIP_IDS = new Set(['professional', 'support-network', 'withdrawal', 'breathing', 'treatment', 'who-quit-today', 'vaping-support']);
+function syncBreathVisuals() {
+  const canvases = new Set($$('[data-breath-canvas]'));
+  for (const [canvas, instance] of breathVisualInstances) {
+    if (!canvases.has(canvas) || !canvas.isConnected) {
+      instance.destroy();
+      breathVisualInstances.delete(canvas);
+    }
+  }
+  for (const canvas of canvases) {
+    let instance = breathVisualInstances.get(canvas);
+    if (!instance) {
+      instance = createBreathVisual(canvas, { ambient: canvas.dataset.phase === 'ambient' });
+      breathVisualInstances.set(canvas, instance);
+    }
+    if (canvas.dataset.phase === 'ambient') {
+      // Decorative background visuals sit behind a modal while a practice is
+      // active; pause them to reserve animation budget for the focused session.
+      if (overlay) instance.pause();
+      else instance.resume();
+    } else if (canvas.dataset.phase) {
+      instance.setPhase(canvas.dataset.phase, Number(canvas.dataset.phaseDuration) || 4);
+    }
+  }
+}
+
 function freshCravingDraft() { return { beforeRating: null, afterRating: null, trigger: '', emotion: '', action: '', outcome: '', note: '' }; }
 function freshSlipDraft() { return { trigger: '', emotion: '', note: '' }; }
 
@@ -146,13 +192,147 @@ function navItem(id, label, glyph) {
   return `<button type="button" class="nav-item ${activeTab === id ? 'active' : ''}" data-tab="${id}" aria-current="${activeTab === id ? 'page' : 'false'}">${icon(glyph, 21)}<span>${label}</span></button>`;
 }
 
+function healthNavItem() {
+  const active = activeTab === 'health' || activeTab === 'practices';
+  return `<div class="health-nav-wrap"><button type="button" class="nav-item health-nav-trigger ${active ? 'active' : ''}" data-action="toggle-health-menu" aria-haspopup="menu" aria-expanded="${healthMenuOpen}" aria-controls="health-nav-menu" aria-current="${activeTab === 'health' ? 'page' : 'false'}">${icon('heart-pulse', 21)}<span>Здоровье</span><span class="nav-chevron" aria-hidden="true">${icon('chevron', 12, healthMenuOpen ? 'rotate-270' : '')}</span></button><div id="health-nav-menu" class="health-nav-menu ${healthMenuOpen ? 'is-open' : ''}" role="menu" aria-label="Разделы здоровья" aria-hidden="${!healthMenuOpen}"><button type="button" class="health-nav-option ${activeTab === 'health' ? 'active' : ''}" data-action="select-health-section" data-section="health" role="menuitem" aria-current="${activeTab === 'health' ? 'page' : 'false'}">${icon('heart-pulse', 18)}<span><strong>Здоровье</strong><small>Сведения и наблюдения</small></span><span class="health-option-check">${activeTab === 'health' ? icon('check', 16) : ''}</span></button><button type="button" class="health-nav-option ${activeTab === 'practices' ? 'active' : ''}" data-action="select-health-section" data-section="practices" role="menuitem" aria-current="${activeTab === 'practices' ? 'page' : 'false'}">${icon('wind', 18)}<span><strong>Практики</strong><small>Дыхание и паузы</small></span><span class="health-option-check">${activeTab === 'practices' ? icon('check', 16) : ''}</span></button></div></div>`;
+}
+
+function overlayKey() {
+  if (!overlay) return '';
+  return [overlay.type || '', overlay.id || '', overlay.date || '', overlay.sessionKey || ''].join(':');
+}
+
+function htmlFragment(markup) {
+  const template = document.createElement('template');
+  template.innerHTML = markup;
+  return template.content;
+}
+
+function nodeKey(node) {
+  return node?.nodeType === 1 ? node.getAttribute('data-key') : null;
+}
+
+function compatibleNodes(current, next) {
+  return !!current && !!next && current.nodeType === next.nodeType && current.nodeName === next.nodeName && current.namespaceURI === next.namespaceURI;
+}
+
+// Reconcile existing DOM nodes instead of replacing the app shell on every click.
+// This preserves focus, scrollable hosts, the nav/toast nodes and running CSS animations.
+function morphNode(current, next) {
+  if (!compatibleNodes(current, next)) {
+    current.replaceWith(next);
+    return next;
+  }
+  if (current.nodeType === Node.TEXT_NODE || current.nodeType === Node.COMMENT_NODE) {
+    if (current.nodeValue !== next.nodeValue) current.nodeValue = next.nodeValue;
+    return current;
+  }
+  if (current.nodeType !== Node.ELEMENT_NODE) return current;
+
+  const isFormControl = current.matches('input, textarea, select');
+  const isFocused = current === document.activeElement;
+  const oldValue = isFormControl ? current.value : undefined;
+  const oldChecked = isFormControl && 'checked' in current ? current.checked : undefined;
+  const selectionStart = isFocused && typeof current.selectionStart === 'number' ? current.selectionStart : null;
+  const selectionEnd = isFocused && typeof current.selectionEnd === 'number' ? current.selectionEnd : null;
+
+  const isCanvas = current.nodeName === 'CANVAS';
+  // The renderer owns a canvas' intrinsic width/height. Removing either attribute
+  // resets the bitmap to the browser default (300×150) while the animation still
+  // believes it has the old dimensions — the sphere then appears to jump/drift.
+  const canvasRuntimeAttributes = isCanvas ? new Set(['width', 'height']) : null;
+  for (const attr of Array.from(current.attributes)) {
+    if (canvasRuntimeAttributes?.has(attr.name)) continue;
+    if (!next.hasAttribute(attr.name)) current.removeAttribute(attr.name);
+  }
+  for (const attr of Array.from(next.attributes)) {
+    if (canvasRuntimeAttributes?.has(attr.name)) continue;
+    if (current.getAttribute(attr.name) !== attr.value) current.setAttribute(attr.name, attr.value);
+  }
+  morphChildren(current, next);
+
+  if (isFormControl) {
+    if (current.type === 'checkbox' || current.type === 'radio') {
+      current.checked = isFocused ? oldChecked : next.checked;
+    } else if (isFocused) {
+      if (current.value !== oldValue) current.value = oldValue;
+      if (selectionStart !== null && typeof current.setSelectionRange === 'function') {
+        try { current.setSelectionRange(selectionStart, selectionEnd); } catch (_) { /* select/number inputs do not expose selection ranges */ }
+      }
+    } else if (current.value !== next.value) {
+      current.value = next.value;
+    }
+  }
+  return current;
+}
+
+function morphChildren(parent, nextParent) {
+  const nextNodes = Array.from(nextParent.childNodes);
+  const used = new Set();
+  for (let index = 0; index < nextNodes.length; index++) {
+    const next = nextNodes[index];
+    let current = parent.childNodes[index] || null;
+    const key = nodeKey(next);
+    if (key) {
+      const keyed = Array.from(parent.children).find(child => nodeKey(child) === key && !used.has(child));
+      if (keyed && keyed !== current) {
+        parent.insertBefore(keyed, current);
+        current = keyed;
+      }
+    }
+    if (!current) {
+      parent.appendChild(next);
+      used.add(next);
+    } else {
+      const result = morphNode(current, next);
+      used.add(result);
+    }
+  }
+  while (parent.childNodes.length > nextNodes.length) parent.removeChild(parent.lastChild);
+}
+
+function syncNavigation() {
+  for (const button of $$('.nav-item[data-tab]')) {
+    const active = button.dataset.tab === activeTab;
+    button.classList.toggle('active', active);
+    button.setAttribute('aria-current', active ? 'page' : 'false');
+  }
+  const healthTrigger = $('[data-action="toggle-health-menu"]');
+  if (healthTrigger) {
+    const active = activeTab === 'health' || activeTab === 'practices';
+    healthTrigger.classList.toggle('active', active);
+    healthTrigger.setAttribute('aria-expanded', String(healthMenuOpen));
+    healthTrigger.setAttribute('aria-current', activeTab === 'health' ? 'page' : 'false');
+    const chevron = $('.nav-chevron .icon', healthTrigger);
+    chevron?.classList.toggle('rotate-270', healthMenuOpen);
+  }
+  const healthMenu = $('#health-nav-menu');
+  if (healthMenu) {
+    healthMenu.classList.toggle('is-open', healthMenuOpen);
+    healthMenu.setAttribute('aria-hidden', String(!healthMenuOpen));
+    healthMenu.inert = !healthMenuOpen;
+    healthMenu.querySelectorAll('[data-section]').forEach(option => {
+      const selected = option.dataset.section === activeTab;
+      option.classList.toggle('active', selected);
+      option.setAttribute('aria-current', selected ? 'page' : 'false');
+      const indicator = $('.health-option-check', option);
+      if (indicator) indicator.innerHTML = selected ? icon('check', 16) : '';
+    });
+  }
+}
+
+function scrollPageToTop() {
+  const reduced = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches;
+  window.scrollTo({ top: 0, behavior: reduced ? 'auto' : 'smooth' });
+}
+
 function renderShell(content, { screenChanged = false } = {}) {
   root.innerHTML = `
     <div class="app-frame">
       <header class="topbar">
         <a href="#today" class="brand" data-tab="today" aria-label="Выдох — на главную">
-          <span class="brand-symbol"><span></span></span>
-          <span class="brand-word">выдох<span>.</span></span>
+          <span class="brand-symbol"><img src="./brand-mark.svg" alt=""></span>
+          <span class="brand-word">ВЫДОХ</span>
         </a>
         <div class="topbar-right">
           <span class="privacy-pill">${icon('lock', 13)} Данные на устройстве</span>
@@ -161,9 +341,9 @@ function renderShell(content, { screenChanged = false } = {}) {
       </header>
       <main id="main-content" class="main-content${screenChanged ? ' screen-enter' : ''}" data-screen="${activeTab}" tabindex="-1">${content}</main>
       <nav class="bottom-nav" aria-label="Основная навигация">
-        ${navItem('today', 'Сегодня', 'home')}
+        ${navItem('today', 'Главная', 'home')}
         ${navItem('calendar', 'Календарь', 'calendar')}
-        ${navItem('practices', 'Практики', 'wind')}
+        ${healthNavItem()}
         ${navItem('tips', 'Советы', 'book')}
         ${navItem('profile', 'Профиль', 'user')}
       </nav>
@@ -174,21 +354,47 @@ function renderShell(content, { screenChanged = false } = {}) {
   `;
   importInput = $('#import-file');
   if (importInput) importInput.addEventListener('change', handleImportFile);
+  lastOverlayKey = overlayKey();
+  syncNavigation();
   updateCountdownElements();
 }
 
 function render() {
+  applyTheme();
   const screens = {
     today: renderToday,
     calendar: renderCalendar,
     practices: renderPractices,
     tips: renderTips,
     profile: renderProfile,
+    health: renderHealth,
   };
+  const content = (screens[activeTab] || renderToday)();
+  if (!$('#main-content')) {
+    renderShell(content);
+    lastRenderedTab = activeTab;
+    syncBreathVisuals();
+    return;
+  }
+
+  const main = $('#main-content');
   const screenChanged = lastRenderedTab !== null && lastRenderedTab !== activeTab;
-  renderShell((screens[activeTab] || renderToday)(), { screenChanged });
+  main.dataset.screen = activeTab;
+  main.classList.remove('screen-enter', 'quiet-update');
+  morphChildren(main, htmlFragment(content));
+  if (screenChanged) {
+    void main.offsetWidth;
+    if (!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches) main.classList.add('screen-enter');
+    scrollPageToTop();
+  } else {
+    main.classList.add('quiet-update');
+  }
   lastRenderedTab = activeTab;
+  syncNavigation();
+  if (overlay || overlayKey() !== lastOverlayKey) renderOverlayOnly();
+  else updateCountdownElements();
   if (overlay) focusDialog();
+  syncBreathVisuals();
 }
 
 function progressRing(percent, caption, value, sublabel = '') {
@@ -197,96 +403,123 @@ function progressRing(percent, caption, value, sublabel = '') {
   </div>`;
 }
 
+function getCurrentHomeTip() {
+  if (!HOME_TIPS.length) return { id: 'empty-tip', category: 'Маленький шаг', text: 'Выбери одно небольшое действие, которое подходит тебе сейчас.' };
+  let current = HOME_TIPS.find(item => item.id === lastHomeTipId);
+  if (!current) {
+    current = HOME_TIPS[Math.floor(Math.random() * HOME_TIPS.length)];
+    lastHomeTipId = current.id;
+  }
+  return current;
+}
+
+function chooseNextHomeTip() {
+  if (!HOME_TIPS.length) return getCurrentHomeTip();
+  const choices = HOME_TIPS.filter(item => item.id !== lastHomeTipId);
+  const pool = choices.length ? choices : HOME_TIPS;
+  const next = pool[Math.floor(Math.random() * pool.length)];
+  lastHomeTipId = next.id;
+  renderHomeTipOnly();
+  return next;
+}
+
+function renderHomeTipMarkup() {
+  const tip = getCurrentHomeTip();
+  return `<article class="home-tip-entry" data-tip-id="${esc(tip.id)}"><div class="home-tip-entry-mark">${icon('lightbulb', 20)}</div><div class="home-tip-entry-copy"><p class="eyebrow">${esc(tip.category)}</p><p class="home-tip-text">${esc(tip.text)}</p><div class="home-tip-entry-foot"><span>${HOME_TIPS.findIndex(item => item.id === tip.id) + 1} из ${HOME_TIPS.length}</span><button class="text-action" type="button" data-action="next-home-tip">Другой совет ${icon('rotate', 14)}</button></div></div></article>`;
+}
+
+function renderHomeTipOnly() {
+  const host = $('#home-tip-content');
+  if (host) host.innerHTML = renderHomeTipMarkup();
+}
+
+function renderHomeJourneyStats() {
+  const range = ['today', 'week', 'month'].includes(homeStatsRange) ? homeStatsRange : 'today';
+  const date = today();
+  const unit = getUnitLabel(state);
+  let metricsMarkup = '';
+  let note = '';
+  if (range === 'today') {
+    const row = state.dailyLogs[date];
+    const log = getLog(state, date);
+    const measured = hasRecordedMeasurement(state, row, log) && !log.untracked;
+    const reported = hasReportedUseOnDate(state, date);
+    const amount = log.untracked || (reported && !measured) || !measured ? '—' : String(log.amount);
+    const tasks = getDailyPlanTasks(date);
+    const done = new Set((state.completedTasks[date] || []).filter(id => tasks.some(task => task.id === id))).size;
+    const journeyValue = state.plan.strategy === 'quit' ? String(getStreak(state)) : (state.plan.dailyTarget ? String(state.plan.dailyTarget) : '—');
+    const journeyCaption = state.plan.strategy === 'quit' ? 'дней текущей серии' : `${unit} — цель на день`;
+    metricsMarkup = `<div class="home-stat-grid"><article class="home-stat-card home-stat-feature"><span class="home-stat-label">УЧЁТ СЕГОДНЯ</span><strong>${esc(amount)}</strong><small>${measured ? esc(unit) : reported ? 'эпизод отмечен, количество не указано' : log.untracked ? 'есть запись в другой единице' : 'пока нет измерения'}</small></article><article class="home-stat-card"><span class="home-stat-label">${state.plan.strategy === 'quit' ? 'ТЕКУЩИЙ ПУТЬ' : 'ДНЕВНАЯ ЦЕЛЬ'}</span><strong>${esc(journeyValue)}</strong><small>${esc(journeyCaption)}</small></article><article class="home-stat-card"><span class="home-stat-label">ШАГИ НА СЕГОДНЯ</span><strong>${done}<span class="home-stat-divider">/</span>${tasks.length}</strong><small>отмечено по желанию</small></article></div>`;
+    note = measured ? `Сегодня записано ${log.amount} ${unit}. Счётчик ниже позволяет добавлять новые записи одним нажатием.` : reported ? 'Ты отметил(а) эпизод без количества. Если удобно, укажи значение в счётчике ниже.' : 'Неизмеренный день остаётся неизвестным в аналитике. Добавь значение ниже, когда это удобно.';
+  } else {
+    const selectedRange = range === 'week' ? 'week' : 'month';
+    const metrics = getProgressAnalytics(state, selectedRange);
+    const rangeLabel = selectedRange === 'week' ? 'За последние 7 дней' : 'За последние 30 дней';
+    const average = metrics.average == null ? '—' : Number(metrics.average.toFixed(1)).toLocaleString('ru-RU');
+    const total = metrics.trackedDays ? Number(metrics.totalRecorded.toFixed(1)).toLocaleString('ru-RU') : '—';
+    metricsMarkup = `<div class="home-stat-grid"><article class="home-stat-card home-stat-feature"><span class="home-stat-label">ДНЕЙ С ИЗМЕРЕНИЕМ</span><strong>${metrics.trackedDays}</strong><small>из ${selectedRange === 'week' ? 7 : 30} календарных дней</small></article><article class="home-stat-card"><span class="home-stat-label">СРЕДНЕЕ ЗНАЧЕНИЕ</span><strong>${esc(average)}</strong><small>${esc(unit)} за измеренный день</small></article><article class="home-stat-card"><span class="home-stat-label">СУММА ЗАПИСЕЙ</span><strong>${esc(total)}</strong><small>${esc(unit)} за период</small></article></div>`;
+    note = metrics.trackedDays ? `${rangeLabel}. Сравниваются только дни с измерением в выбранной единице; пропущенные дни не считаются нулевыми.` : `${rangeLabel}. Пока нет сопоставимых измерений. Счётчик ниже поможет начать фиксировать динамику.`;
+  }
+  return `<section class="home-journey-card panel-card" aria-labelledby="home-journey-title"><div class="home-section-heading"><div><h2 id="home-journey-title">Твой путь</h2></div><span class="home-section-icon">${icon('chart-no-axes-combined', 19)}</span></div><div class="home-range-switch" role="group" aria-label="Период статистики">${[['today','Сегодня'],['week','Неделя'],['month','Месяц']].map(([id,label]) => `<button type="button" data-action="home-stats-range" data-id="${id}" class="home-range-option ${range === id ? 'active' : ''}" aria-pressed="${range === id}">${label}</button>`).join('')}</div><div id="home-journey-metrics">${metricsMarkup}</div><p class="home-stat-note">${esc(note)}</p></section>`;
+}
+
+function homeReviewText(metrics, strategy) {
+  if (strategy === 'reduce') {
+    if (metrics.trend === 'down') return 'В сопоставимых записях поздние значения ниже ранних. Посмотри, какой небольшой шаг стоит повторить.';
+    if (metrics.trend === 'up') return 'Поздние значения выше ранних. Это повод проверить контекст и реалистичность цели, а не автоматически ужесточать ограничения.';
+    if (metrics.trend === 'steady') return 'Показатель выглядит примерно стабильным по доступным записям. Продолжай наблюдать и реши, нужна ли корректировка плана.';
+    return 'Пока недостаточно сопоставимых измерений. Продолжай записывать одну и ту же единицу — выводы станут полезнее.';
+  }
+  if (metrics.noUseDays > 0) return `За неделю есть ${metrics.noUseDays} явно отмеченных дней с нулевым значением и ${metrics.trackedDays} измеренных дней. История остаётся целой, даже если были сложные моменты.`;
+  return `${metrics.trackedDays} дней содержат сопоставимые измерения. Неизвестные дни не считаются нулями — так обзор остаётся честным.`;
+}
+
 function renderToday() {
   const currentDate = today();
   const log = getLog(state, currentDate);
   const reportedUseToday = hasReportedUseOnDate(state, currentDate);
   const hasMeasurementToday = hasRecordedMeasurement(state, state.dailyLogs?.[currentDate], log) && !log.untracked;
-  const unknownUseAmountToday = log.untracked || !hasMeasurementToday || (reportedUseToday && log.amount === 0);
   const strategy = state.plan.strategy;
-  const streak = getStreak(state);
   const unit = getUnitLabel(state);
   const target = Number(state.plan.dailyTarget) || 0;
-  const pct = target > 0 ? clamp(log.amount / target * 100, 0, 100) : log.amount === 0 ? 0 : 100;
-  const progressValue = strategy === 'quit' ? `${streak}` : `${log.amount}`;
-  const progressCaption = strategy === 'quit' ? plural(streak, ['день', 'дня', 'дней']) : 'сегодня';
-  const progressSub = strategy === 'quit' ? 'в своём ритме' : `из ${target || '—'} ${unit}`;
-  const savings = getSavings(state);
-  const cleanDays = getCleanDays(state);
-  const bestStreak = getBestStreak(state);
+  const currentAmountUnknown = log.untracked || (reportedUseToday && !hasMeasurementToday);
+  const counterAmount = currentAmountUnknown ? '—' : String(Number(log.amount) || 0);
   const week = getWeeklyStats(state);
-  const maxWeekly = Math.max(1, ...week.map(d => Number(d.amount || 0)), target || 0);
+  const maxWeekly = Math.max(1, ...week.map(d => d.amount == null ? 0 : Number(d.amount)), target || 0);
+  const bestStreak = getBestStreak(state);
+  const streak = getStreak(state);
   const dailyTasks = getDailyPlanTasks(currentDate);
   const taskIds = new Set(dailyTasks.map(task => task.id));
   const tasksDone = new Set((state.completedTasks[currentDate] || []).filter(id => taskIds.has(id)));
   const reviewMetrics = getWeeklyReviewMetrics(state);
   const reviewKey = getWeekStartISO(currentDate);
   const savedReview = state.weeklyReviews?.[reviewKey] || {};
-  const reviewCard = `<section class="weekly-review-teaser"><div class="review-teaser-top"><span class="review-teaser-icon">${icon('sparkles', 20)}</span><span class="eyebrow">ОБЗОР ЗА 7 ДНЕЙ</span></div><h2>Что стало понятнее на этой неделе?</h2><p>${esc(weeklyReviewMessage(reviewMetrics))}</p><div class="review-mini-stats"><span><strong>${reviewMetrics.cravingCount}</strong><small>эпизодов тяги</small></span><span><strong>${reviewMetrics.practices}</strong><small>практик</small></span><span><strong>${reviewMetrics.taskCompletions}</strong><small>шагов отмечено</small></span></div><button type="button" class="button button-primary" data-action="open-weekly-review">Открыть недельный обзор ${icon('arrow', 15)}</button>${savedReview.updatedAt ? `<small class="review-saved">Твой фокус уже сохранён на эту неделю.</small>` : ''}</section>`;
-  const reason = REASONS[lastReason % REASONS.length];
-  const hint = state.ui.showStarterHint && (!state.plan.baseline || state.finance.weeklySpend == null) ? `
-    <section class="soft-hint" aria-label="Настрой приложение под себя">
-      <span class="hint-icon">${icon('sparkles', 19)}</span>
-      <div class="hint-copy"><strong>Сделаем поддержку персональной</strong><p>Укажи исходный показатель и расходы, чтобы точнее видеть свою динамику.</p><button class="text-action" type="button" data-action="go-profile">Настроить профиль ${icon('arrow', 14)}</button></div>
-      <button class="quiet-icon" type="button" data-action="dismiss-hint" aria-label="Скрыть подсказку">${icon('close', 17)}</button>
-    </section>` : '';
-
-  const heroIntro = strategy === 'quit'
-    ? `<div class="hero-kicker"><span class="pulse-dot"></span> ТВОЙ ПУТЬ</div><h1>Каждый новый день —<br><em>твой выбор.</em></h1><p class="hero-description">Не нужно быть идеальным. Важно продолжать в своём темпе.</p>`
-    : `<div class="hero-kicker"><span class="pulse-dot"></span> ТВОЙ ПЛАН</div><h1>Маленькие шаги.<br><em>Реальные изменения.</em></h1><p class="hero-description">Отмечай свой привычный показатель и сравнивай дни между собой.</p>`;
-
-  const ring = strategy === 'quit'
-    ? progressRing(clamp(streak / 30 * 100, 3, 100), 'дней подряд', streak, streak > 0 ? 'в пути' : 'новый шаг')
-    : progressRing(!unknownUseAmountToday && target > 0 ? clamp(100 - (log.amount / target * 100), 0, 100) : 0, 'цель на день', !unknownUseAmountToday && target > 0 ? `${Math.max(0, target - log.amount)}` : '—', !unknownUseAmountToday && target > 0 ? `${unit} осталось` : 'нет измерения');
-
-  const quickProgress = strategy === 'quit'
-    ? `<div class="metric-grid"><article class="metric-card"><span class="metric-icon mint">${icon('calendar', 19)}</span><span class="metric-label">Дней без записей об употреблении</span><strong>${cleanDays}</strong><span class="metric-foot">с начала отсчёта</span></article><article class="metric-card"><span class="metric-icon lime">${icon('chart', 19)}</span><span class="metric-label">Лучшая серия</span><strong>${bestStreak}</strong><span class="metric-foot">${plural(bestStreak, ['день', 'дня', 'дней'])}</span></article></div>`
-    : `<div class="metric-grid"><article class="metric-card"><span class="metric-icon mint">${icon('chart', 19)}</span><span class="metric-label">Сегодня отмечено</span><strong>${unknownUseAmountToday ? '—' : log.amount}</strong><span class="metric-foot">${unknownUseAmountToday ? 'пока нет измерения' : unit}</span></article><article class="metric-card"><span class="metric-icon lime">${icon('target', 19)}</span><span class="metric-label">Твоя цель на день</span><strong>${target || '—'}</strong><span class="metric-foot">${target ? unit : 'не задана'}</span></article></div>`;
-
   const weeklyBars = week.map(row => {
-    const value = Number(row.amount || 0);
-    const height = row.amount === null ? 6 : (target > 0 && strategy === 'reduce' ? clamp(value / Math.max(target, value, 1) * 100, 8, 100) : clamp(value / maxWeekly * 100, value === 0 ? 7 : 12, 100));
-    const colorClass = row.amount === null ? 'bar-before' : value === 0 ? 'bar-clear' : (strategy === 'reduce' && target > 0 && value <= target ? 'bar-within' : 'bar-used');
-    const date = row.date.slice(-2).replace(/^0/, '');
-    return `<div class="week-column"><div class="week-value">${row.amount === null ? '·' : value}</div><div class="week-track"><div class="week-bar ${colorClass}" style="height:${height}%"></div></div><span class="week-label ${row.today ? 'today' : ''}">${WEEKDAYS[(new Date(`${row.date}T12:00:00`).getDay() + 6) % 7]}</span><span class="week-date">${date}</span></div>`;
+    const known = row.amount !== null && Number.isFinite(Number(row.amount));
+    const value = known ? Number(row.amount) : null;
+    const height = !known ? 5 : value === 0 ? 7 : clamp(value / maxWeekly * 100, 12, 100);
+    const colorClass = !known ? 'bar-before' : value === 0 ? 'bar-clear' : (strategy === 'reduce' && target > 0 && value <= target ? 'bar-within' : 'bar-used');
+    return `<div class="week-column"><div class="week-value">${known ? esc(value) : '·'}</div><div class="week-track"><div class="week-bar ${colorClass}" style="height:${height}%"></div></div><span class="week-label ${row.today ? 'today' : ''}">${WEEKDAYS[(new Date(`${row.date}T12:00:00`).getDay() + 6) % 7]}</span><span class="week-date">${row.date.slice(-2).replace(/^0/, '')}</span></div>`;
   }).join('');
-
-  const completedTaskRows = dailyTasks.map(task => `<button class="task-row ${tasksDone.has(task.id) ? 'is-done' : ''}" type="button" data-action="toggle-task" data-id="${task.id}" aria-pressed="${tasksDone.has(task.id)}"><span class="task-check">${tasksDone.has(task.id) ? icon('check', 17) : ''}</span><span class="task-copy"><strong>${task.title}</strong><small>${task.subtitle}</small></span><span class="task-plus">${tasksDone.has(task.id) ? 'Готово' : 'Отметить'}</span></button>`).join('');
-  const triggerCounts = new Map();
-  const triggerWindowStart = addDays(currentDate, -29);
-  for (const [date, row] of Object.entries(state.dailyLogs)) {
-    if (date < triggerWindowStart || date > currentDate || !Array.isArray(row?.triggers)) continue;
-    for (const trigger of row.triggers) triggerCounts.set(trigger, (triggerCounts.get(trigger) || 0) + 1);
-  }
-  for (const entry of state.cravingLogs || []) { const date = entry.date || String(entry.at || '').slice(0, 10); if (date < triggerWindowStart || date > currentDate || !entry.trigger || entry.type === 'slip') continue; triggerCounts.set(entry.trigger, (triggerCounts.get(entry.trigger) || 0) + 1); }
-  const triggerLabelById = new Map(TRIGGER_OPTIONS);
-  const topTriggers = [...triggerCounts.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3);
-  const triggerInsights = topTriggers.length ? `<section class="panel-card trigger-insights"><div class="panel-heading"><div><p class="eyebrow">НАБЛЮДЕНИЯ ЗА 30 ДНЕЙ</p><h2>Что чаще влияет на привычку</h2></div><span class="metric-icon mint">${icon('sparkles', 19)}</span></div><p class="chart-note">Это не оценка и не диагноз, а повторяющиеся ситуации, которые ты сам(а) отметил(а).</p><div class="trigger-insight-list">${topTriggers.map(([id, count]) => `<div class="trigger-insight-row"><span>${esc(triggerLabelById.get(id) || 'Другая ситуация')}</span><span>${count} ${plural(count, ['отметка', 'отметки', 'отметок'])}</span></div>`).join('')}</div><button type="button" class="text-action" data-action="open-day" data-date="${currentDate}">Отметить ситуацию сегодня ${icon('arrow', 14)}</button></section>` : '';
+  const completedTaskRows = dailyTasks.map(task => `<button class="task-row ${tasksDone.has(task.id) ? 'is-done' : ''}" type="button" data-action="toggle-task" data-id="${task.id}" aria-pressed="${tasksDone.has(task.id)}"><span class="task-check">${tasksDone.has(task.id) ? icon('check', 17) : ''}</span><span class="task-copy"><strong>${esc(task.title)}</strong><small>${esc(task.subtitle)}</small></span><span class="task-plus">${tasksDone.has(task.id) ? 'Готово' : 'Отметить'}</span></button>`).join('');
+  const amountStatus = currentAmountUnknown ? 'Без количества' : hasMeasurementToday ? 'Записано' : '';
+  const savedText = savedReview.focus ? `Фокус недели: ${({ 'trigger-plan': 'работа с триггером', 'same-unit': 'единый показатель', 'review-target': 'реалистичная цель', pause: 'короткая пауза', support: 'поддержка', breath: 'дыхание', 'self-kindness': 'возвращение к плану' })[savedReview.focus] || 'твой выбор'}.` : '';
 
   return `
-    <section class="page-heading fade-in"><div><p class="eyebrow">${esc(dateHeading())}</p><h1>Привет, это твой день <span class="heading-spark">✳</span></h1><p class="page-subtitle">Пусть сегодня будет чуть легче.</p></div><button class="heading-action" type="button" data-action="go-profile" aria-label="Настройки профиля">${icon('settings', 20)}</button></section>
-    ${hint}
-    <section class="hero-card fade-in" aria-label="Твой прогресс">
-      <div class="hero-glow hero-glow-a"></div><div class="hero-glow hero-glow-b"></div><div class="hero-content"><div class="hero-copy">${heroIntro}<div class="hero-actions"><button class="button button-lime" type="button" data-action="open-craving">${icon('wind', 18)} Мне хочется затянуться</button><button class="button button-glass" type="button" data-action="quick-practice">${icon('play', 15)} Пауза на минуту</button></div></div><div class="hero-visual">${ring}<div class="ring-orbit orbit-one"></div><div class="ring-orbit orbit-two"></div></div></div>
-      <div class="hero-footer"><span>${icon('sparkles', 15)} Не нужно проходить этот путь идеально</span><span class="hero-footer-mark">ВДОХ · ВЫДОХ</span></div>
+    <section class="page-heading home-greeting"><div><p class="eyebrow">${esc(dateHeading())}</p><h1>Сегодня</h1></div><button class="heading-action" type="button" data-action="go-profile" aria-label="Настройки профиля">${icon('settings', 20)}</button></section>
+    ${renderHomeJourneyStats()}
+    <section class="home-counter-card ${strategy === 'quit' ? 'counter-quit' : 'counter-reduce'}" aria-labelledby="home-counter-title">
+      <div class="home-counter-top"><div><h2 id="home-counter-title">${strategy === 'quit' ? 'Счётчик употребления' : 'Учёт на сегодня'}</h2></div>${amountStatus ? `<span class="home-counter-status ${currentAmountUnknown ? 'is-unknown' : hasMeasurementToday && log.amount > 0 ? 'has-value' : ''}" role="status">${esc(amountStatus)}</span>` : ''}</div>
+      <div class="home-counter-main"><div class="home-counter-number-wrap"><strong id="home-counter-value" aria-live="polite">${esc(counterAmount)}</strong><span>${esc(unit)}</span></div><button class="home-counter-add" type="button" data-action="adjust-amount" data-delta="1" aria-label="Добавить одну запись: +1 ${esc(unit)}"><span class="counter-add-icon">${icon('plus', 23)}</span><span>Добавить</span><small>+1 ${esc(unit)}</small></button></div>
+      ${strategy === 'reduce' && target > 0 ? `<div class="home-counter-target"><div class="home-target-track"><span style="width:${hasMeasurementToday ? Math.min(100, log.amount / target * 100) : 0}%"></span></div><div><span>Цель на день</span><strong>${target} ${esc(unit)}</strong></div></div>` : ''}
+      <div class="home-counter-bottom"><button type="button" class="counter-undo" data-action="adjust-amount" data-delta="-1" ${Number(log.amount || 0) <= 0 || currentAmountUnknown ? 'disabled' : ''}>${icon('undo-2', 15)} Отменить последнее</button><button type="button" class="counter-detail" data-action="open-day" data-date="${currentDate}">Детали дня ${icon('arrow-up-right', 15)}</button></div>
+      <div class="home-counter-help"><button type="button" data-action="open-craving">${icon('wind', 16)} Сейчас тянет — нужна пауза?</button>${strategy === 'quit' && (Number(log.amount || 0) > 0 || reportedUseToday) ? `<button type="button" data-action="open-slip">${icon('heart', 15)} Разобрать эпизод без самокритики</button>` : ''}</div>
     </section>
-    <div class="section-title-row"><div><p class="eyebrow">ТВОЙ ПРОГРЕСС</p><h2>Из маленького складывается большое</h2></div><button class="text-action" type="button" data-tab="calendar">Вся история ${icon('arrow', 14)}</button></div>
-    ${quickProgress}
-    ${strategy === 'quit' && (log.amount > 0 || hasReportedUseOnDate(state, currentDate)) ? `<section class="slip-support-card"><span class="slip-support-icon">${icon('heart', 19)}</span><div><strong>Этот эпизод не стирает предыдущий опыт</strong><p>Можно спокойно записать, что произошло, и выбрать следующий шаг. История останется на месте.</p><button type="button" class="text-action" data-action="open-slip">Разобрать ситуацию без самокритики ${icon('arrow', 14)}</button></div></section>` : ''}
-    <section class="panel-card usage-card">
-      <div class="panel-heading"><div><p class="eyebrow">СЕГОДНЯ</p><h2>${strategy === 'quit' ? 'Как прошёл день?' : 'Отметить употребление'}</h2></div><span class="status-pill ${unknownUseAmountToday ? 'status-warn' : log.amount === 0 ? 'status-calm' : strategy === 'reduce' && target > 0 && log.amount <= target ? 'status-warn' : 'status-used'}">${unknownUseAmountToday ? 'Эпизод отмечен' : log.amount === 0 ? 'Пока 0' : `${log.amount} ${unit}`}</span></div>
-      <div class="usage-body"><div class="usage-copy"><strong class="usage-total">${unknownUseAmountToday ? '—' : log.amount}</strong><span>${unknownUseAmountToday ? 'количество пока не отмечено' : `${unit} отмечено сегодня`}</span><small>${unknownUseAmountToday ? (reportedUseToday ? 'Ты отметил(а) употребление без количества. Если хочешь, добавь показатель отдельно.' : log.untracked ? 'Есть данные в другой единице. Приложение не пересчитывает их автоматически.' : 'Нет измерения за сегодня. Отметь количество или явно подтверди день без употребления.') : strategy === 'quit' ? 'Если употребление произошло, это не отменяет предыдущий прогресс.' : target > 0 ? `Твоя цель — ${target} ${unit}. Сравнивай дни без самокритики.` : 'Настрой дневную цель в профиле, когда будешь готов(а).'}</small></div><div class="stepper"><button type="button" data-action="adjust-amount" data-delta="-1" aria-label="Уменьшить количество" ${log.amount <= 0 ? 'disabled' : ''}>${icon('minus', 20)}</button><button type="button" data-action="adjust-amount" data-delta="1" aria-label="Добавить количество">${icon('plus', 20)}</button></div></div>
-      ${strategy === 'reduce' && target > 0 ? (unknownUseAmountToday ? `<div class="target-caption target-caption-unknown"><span>—</span><span>Нет измерения за сегодня</span><span>${target}</span></div>` : `<div class="target-progress"><div class="target-progress-fill ${pct >= 100 ? 'is-full' : ''}" style="width:${Math.min(100, pct)}%"></div></div><div class="target-caption"><span>0</span><span>${Math.round(pct)}% от выбранной цели</span><span>${target}</span></div>`) : ''}
-      <div class="usage-foot">${icon('lock', 14)} Записи хранятся на этом устройстве <button type="button" class="text-action" data-action="open-day" data-date="${currentDate}">Заметка дня ${icon('chevron', 14)}</button>${canMarkNoUse(currentDate) ? `<button type="button" class="text-action" data-action="toggle-no-use" data-date="${currentDate}">${state.dailyLogs[currentDate]?.noUseConfirmed ? 'Снять отметку о дне без употребления' : 'Отметить день без употребления'}</button>` : ''}</div>
-    </section>
-    <section class="panel-card weekly-card"><div class="panel-heading"><div><p class="eyebrow">ПОСЛЕДНИЕ 7 ДНЕЙ</p><h2>Динамика без оценок</h2></div><span class="chart-legend"><i></i> ${strategy === 'quit' ? 'Записи об употреблении' : 'Твой показатель'}</span></div><div class="week-chart">${weeklyBars}</div><p class="chart-note">График показывает твои записи, а не оценивает, насколько «хорошим» был день.</p></section>
-    ${reviewCard}
-    ${triggerInsights}
-    ${savings !== null ? `<section class="money-card"><span class="money-orb">${icon('money', 21)}</span><div class="money-copy"><p class="eyebrow">ТВОЯ ЦЕЛЬ</p><h2>${formatMoney(savings, state.finance.currency)}</h2><p>Ориентировочная экономия по введённым расходам.</p>${state.finance.goalAmount > 0 ? `<div class="money-progress"><span style="width:${clamp(savings / state.finance.goalAmount * 100, 0, 100)}%"></span></div><small>${esc(state.finance.goalName || 'Цель')} · ${Math.round(clamp(savings / state.finance.goalAmount * 100, 0, 100))}%</small>` : `<button type="button" class="text-action" data-action="go-profile">Добавить финансовую цель ${icon('arrow', 14)}</button>`}</div></section>` : ''}
-    <section class="panel-card tasks-card"><div class="panel-heading"><div><p class="eyebrow">НА СЕГОДНЯ</p><h2>Один шаг за другим</h2></div><span class="task-count">${tasksDone.size}/${dailyTasks.length}</span></div><div class="task-list">${completedTaskRows}</div><div class="task-footer">${dailyTasks.every(task => tasksDone.has(task.id)) ? 'Сегодня ты уделил(а) время себе. Этого достаточно.' : 'Необязательно делать всё. Выбери то, что подходит сегодня.'}</div></section>
-    <section class="panel-card milestones-card"><div class="panel-heading"><div><p class="eyebrow">ТВОИ ЭТАПЫ</p><h2>Замечай пройденное</h2></div><span class="milestone-count">${MILESTONES.filter(m => Math.max(bestStreak, streak) >= m.days || state.achievements.celebrated.includes(m.days)).length}/${MILESTONES.length}</span></div><div class="milestone-strip">${MILESTONES.map(m => { const unlocked = Math.max(bestStreak, streak) >= m.days || state.achievements.celebrated.includes(m.days); return `<button type="button" class="milestone ${unlocked ? 'unlocked' : ''}" data-action="milestone-info" data-days="${m.days}"><span class="milestone-bubble">${unlocked ? icon('check', 17) : m.days}</span><strong>${esc(m.title)}</strong><small>${m.days} ${plural(m.days, ['день', 'дня', 'дней'])}</small></button>`; }).join('')}</div><p class="chart-note">Этапы отмечают опыт, а не требуют идеальной серии. Сложный день не стирает то, чему ты уже научился(ась).</p></section>
-    <section class="reason-card"><div class="reason-top"><span class="reason-icon">${icon('heart', 18)}</span><span class="eyebrow">НАПОМИНАНИЕ СЕБЕ</span><button type="button" class="quiet-icon" data-action="next-reason" aria-label="Другая мысль">${icon('rotate', 17)}</button></div><p>${esc(reason.text)}</p><span class="reason-category">${esc(reason.category)}</span></section>
-    <div class="bottom-note">${icon('leaf', 15)} Маленький шаг — тоже движение вперёд.</div>
+    <section class="home-tip-card" aria-labelledby="home-tip-title"><div class="home-tip-header"><div><h2 id="home-tip-title">Совет</h2></div></div><div id="home-tip-content">${renderHomeTipMarkup()}</div></section>
+    <section class="home-dynamics panel-card"><div class="home-section-heading"><div><h2>Динамика за 7 дней</h2></div><button type="button" class="text-action" data-tab="calendar">Вся история ${icon('arrow', 14)}</button></div><p class="chart-note">${strategy === 'quit' ? 'График показывает только твои записи об употреблении.' : `График показывает записи в единице «${esc(unit)}».` } Неизвестный день не считается нулём.</p><div class="week-chart home-week-chart">${weeklyBars}</div></section>
+    <section class="home-overview panel-card"><div class="home-section-heading"><div><h2>Обзор</h2></div><span class="home-section-icon">${icon('calendar-check', 19)}</span></div><p class="home-overview-summary">${esc(homeReviewText(reviewMetrics, strategy))}</p><div class="home-overview-metrics"><div><strong>${reviewMetrics.trackedDays}/7</strong><span>дней с измерением</span></div><div><strong>${tasksDone.size}/${dailyTasks.length}</strong><span>шагов сегодня</span></div><div><strong>${bestStreak}</strong><span>лучшая серия</span></div></div><div class="task-list home-task-list">${completedTaskRows}</div><div class="home-overview-footer"><span>${icon('lock', 14)} Локальные данные</span><button type="button" class="text-action" data-action="open-weekly-review">Подробнее в «Здоровье» ${icon('arrow', 14)}</button></div>${savedText ? `<p class="home-saved-focus">${esc(savedText)}</p>` : ''}</section>
+    <section class="panel-card milestones-card home-milestones"><div class="panel-heading"><div><h2>Этапы</h2></div><span class="milestone-count">${MILESTONES.filter(m => Math.max(bestStreak, streak) >= m.days || state.achievements.celebrated.includes(m.days)).length}/${MILESTONES.length}</span></div><div class="milestone-strip">${MILESTONES.map(m => { const unlocked = Math.max(bestStreak, streak) >= m.days || state.achievements.celebrated.includes(m.days); return `<button type="button" class="milestone ${unlocked ? 'unlocked' : ''}" data-action="milestone-info" data-days="${m.days}"><span class="milestone-bubble">${unlocked ? icon('check', 17) : m.days}</span><strong>${esc(m.title)}</strong><small>${m.days} ${plural(m.days, ['день', 'дня', 'дней'])}</small></button>`; }).join('')}</div></section>
+    <section class="home-profile-teaser"><div class="home-profile-avatar">${icon('user-round', 21)}</div><div class="home-profile-copy"><h2>Профиль</h2><p>Цели, предпочтения и личные данные.</p></div><button type="button" class="home-profile-link" data-action="go-profile" aria-label="Перейти в профиль">${icon('arrow-up-right', 19)}</button></section>
   `;
 }
 
@@ -308,16 +541,8 @@ function renderProgressAnalytics() {
       : metrics.deltaPercent < -0.5
         ? `Среднее по отмеченным дням на ${Math.round(Math.abs(metrics.deltaPercent))}% выше исходной точки. Это повод посмотреть на обстоятельства, а не ужесточать план автоматически.`
         : 'Среднее по отмеченным дням примерно на уровне исходной точки.';
-  const labels = new Map(TRIGGER_OPTIONS);
-  const moods = new Map(EMOTION_OPTIONS);
-  const renderCounts = (items, lookup, empty) => items.length
-    ? items.map(([id, count]) => `<div class="analytics-insight-row"><span>${esc(lookup.get(id) || id)}</span><strong>${count}</strong></div>`).join('')
-    : `<p class="field-help">${empty}</p>`;
   const trendLabel = range === 'week' ? 'Последние 7 дней' : range === 'month' ? 'Последние 30 дней' : 'Весь период с начала пути';
   const averageLabel = metrics.average == null ? '—' : Number(metrics.average.toFixed(1)).toLocaleString('ru-RU');
-  const practiceEvidence = metrics.ratedBreathCount
-    ? `В ${metrics.lowerAfterBreath} из ${metrics.ratedBreathCount} записей с отмеченным дыханием пользовательская оценка тяги после действия была ниже. Это самооценка, не доказательство причинного эффекта.`
-    : 'Если после практики отмечать силу тяги до и после, со временем можно увидеть собственные наблюдения. Пока таких сравнений недостаточно.';
   return `<section class="panel-card analytics-panel" aria-labelledby="analytics-title">
     <div class="panel-heading"><div><p class="eyebrow">ТВОЯ ДИНАМИКА</p><h2 id="analytics-title">Сравнивай себя с собой</h2></div><span class="metric-icon mint">${icon('chart', 19)}</span></div>
     <div class="analytics-range" role="group" aria-label="Период статистики">${[['week','7 дней'],['month','30 дней'],['all','Весь путь']].map(([id,label])=>`<button type="button" class="filter-chip ${range===id?'active':''}" data-action="analytics-range" data-id="${id}" aria-pressed="${range===id}">${label}</button>`).join('')}</div>
@@ -325,9 +550,7 @@ function renderProgressAnalytics() {
     <div class="analytics-chart" role="img" aria-label="График ${esc(trendLabel.toLowerCase())}">${bars}</div>
     <div class="analytics-metric-grid"><article><span>Отмечено дней</span><strong>${metrics.trackedDays}</strong></article><article><span>Среднее значение</span><strong>${averageLabel}</strong><small>${esc(unit)}</small></article><article><span>Эпизодов с контекстом</span><strong>${metrics.daysWithReportedUse}</strong></article></div>
     <div class="analytics-comparison"><span class="analytics-comparison-icon">${icon('target', 17)}</span><p>${esc(comparison)}</p></div>
-    <div class="analytics-insights-grid"><section><h3>Повторяющиеся ситуации</h3>${renderCounts(metrics.topTriggers, labels, 'Пока недостаточно отмеченных триггеров.')}</section><section><h3>Эмоциональный фон</h3>${renderCounts(metrics.topMoods, moods, 'Эмоциональное состояние пока не отмечалось.')}</section></div>
-    <div class="analytics-practice-link"><div><p class="eyebrow">ПРАКТИКИ И САМООЦЕНКА</p><h3>${metrics.practiceCount} ${plural(metrics.practiceCount,['практика','практики','практик'])} · ${metrics.practiceMinutes} мин</h3><p>${esc(practiceEvidence)}</p></div><span class="analytics-practice-icon">${icon('wind', 19)}</span></div>
-    <p class="field-help">Счётчики триггеров суммируют отдельные отметки в дневнике и календаре — это упоминания, а не доказательство причинности. Показатели описывают личные наблюдения, а не медицинский результат. Экономия рассчитывается отдельно по введённым расходам и только там, где есть сопоставимые данные.</p>
+    <p class="field-help">График описывает личные записи, а не медицинский результат. Ситуации, эмоциональные отметки и связь с практиками вынесены во вкладку «Здоровье», чтобы не смешивать оздоровительные наблюдения с учётом употребления.</p>
   </section>`;
 }
 
@@ -353,7 +576,7 @@ function renderCalendar() {
     cells.push(`<button type="button" class="calendar-day status-${status} ${date === current ? 'is-today' : ''} ${amount > 0 ? 'has-amount' : ''}" data-action="open-day" data-date="${date}" aria-label="${day} ${MONTHS[month]}, ${statusLabel}${amount ? `, ${amount}` : ''}" ${disabled ? 'disabled' : ''}><span class="day-number">${day}</span>${amount > 0 ? `<span class="day-amount">${amount}</span>` : status === 'clear' ? '<span class="day-mark"></span>' : (status === 'untracked' || status === 'unrecorded') ? '<span class="day-amount">·</span>' : ''}</button>`);
   }
   return `
-    <section class="page-heading"><div><p class="eyebrow">ИСТОРИЯ И НАБЛЮДЕНИЯ</p><h1>Календарь</h1><p class="page-subtitle">Не отчёт об идеальности, а карта твоего опыта.</p></div><span class="heading-icon">${icon('calendar', 21)}</span></section>
+    <section class="page-heading"><div><h1>Календарь</h1><p class="page-subtitle">История употребления по дням.</p></div><span class="heading-icon">${icon('calendar', 21)}</span></section>
     <section class="panel-card calendar-panel"><div class="month-switcher"><button type="button" class="round-button" data-action="month-prev" aria-label="Предыдущий месяц">${icon('chevron', 19, 'flip-horizontal')}</button><div><h2>${MONTHS_NOM[month]} ${year}</h2><p>${currentMonth ? 'Текущий месяц' : 'История по дням'}</p></div><button type="button" class="round-button" data-action="month-next" aria-label="Следующий месяц" ${currentMonth ? 'disabled' : ''}>${icon('chevron', 19)}</button></div>
       <div class="calendar-grid">${WEEKDAYS.map(d => `<span class="calendar-weekday">${d}</span>`).join('')}${cells.join('')}</div>
       <div class="calendar-legend"><span><i class="legend-dot clear"></i>Отмечено без употребления</span><span><i class="legend-dot used"></i>Есть запись</span><span><i class="legend-dot empty"></i>До начала пути</span><span><i class="legend-dot untracked"></i>Другая единица</span><span><i class="legend-dot unrecorded"></i>Нет измерения</span></div>
@@ -369,7 +592,8 @@ function renderPractices() {
   const range = state.ui.practiceRange || 'month';
   const stats = getPracticeAnalytics(state, range);
   const favorites = new Set(state.practiceSettings?.favorites || []);
-  const list = PRACTICES.filter(practice => !practiceFavoritesOnly || favorites.has(practice.id));
+  const allowedCategory = PRACTICE_CATEGORIES.some(item => item.id === practiceCategory) ? practiceCategory : 'all';
+  const list = PRACTICES.filter(practice => (!practiceFavoritesOnly || favorites.has(practice.id)) && (allowedCategory === 'all' || practice.category === allowedCategory));
   const topPracticeLabels = new Map(PRACTICES.map(practice => [practice.id, practice.name]));
   const history = stats.sessions.slice().sort((a,b) => String(b.finishedAt).localeCompare(String(a.finishedAt))).slice(0, 5);
   const historyMarkup = history.length
@@ -379,41 +603,91 @@ function renderPractices() {
       const mins = Math.round((Number(session.duration) || 0) / 60);
       return `<div class="practice-history-row"><span class="practice-history-mark">${icon('wind',16)}</span><div><strong>${esc(practice?.name || 'Дыхательная практика')}</strong><small>${esc(date ? formatShortDate(date) : '')} · ${session.completed === false ? 'остановлена раньше' : 'завершена'}</small></div><span class="practice-history-duration">${mins} мин</span></div>`;
     }).join('')}</div>`
-    : `<div class="library-empty">${icon('wind',22)}<strong>История пока пуста</strong><span>Завершённая практика появится здесь. Можно начать с одной минуты.</span></div>`;
+    : `<div class="library-empty">${icon('wind',22)}<strong>История пока пуста</strong><span>Первая сохранённая сессия появится здесь. Можно начать с одной минуты.</span></div>`;
   const topPractices = stats.topPractices.length
     ? stats.topPractices.map(([id,count])=>`<div class="analytics-insight-row"><span>${esc(topPracticeLabels.get(id)||id)}</span><strong>${count}</strong></div>`).join('')
     : '<p class="field-help">Заверши несколько практик, чтобы увидеть, к каким ты чаще возвращаешься.</p>';
+  const cards = list.map((practice, index) => `
+    <article class="practice-card practice-tone-${practice.tone}">
+      <button type="button" class="practice-card-main" data-action="open-practice" data-id="${practice.id}" aria-label="Открыть практику: ${esc(practice.name)}">
+        <div class="practice-card-visual"><span class="practice-card-orbit orbit-one"></span><span class="practice-card-orbit orbit-two"></span><span class="practice-card-core"></span><span class="practice-card-spark spark-one"></span><span class="practice-card-spark spark-two"></span><span class="practice-card-spark spark-three"></span><span class="practice-card-index">${String(index + 1).padStart(2,'0')}</span></div>
+        <div class="practice-card-copy"><span class="practice-card-tag">${esc(practice.tag)}</span><h3>${esc(practice.name)}</h3><p>${esc(practice.description)}</p><div class="practice-card-meta"><span>${icon('clock',13)} ${state.practiceSettings?.durations?.[practice.id] || Math.round(practice.duration/60)} мин</span><span>${esc(practice.label)}</span></div></div>
+        <span class="practice-card-open">${icon('arrow-up-right',17)}</span>
+      </button>
+      <button type="button" class="practice-card-favorite ${favorites.has(practice.id)?'is-favorite':''}" data-action="toggle-practice-favorite" data-id="${practice.id}" aria-label="${favorites.has(practice.id)?'Убрать из':'Добавить в'} избранное: ${esc(practice.name)}" aria-pressed="${favorites.has(practice.id)}">${icon('star',17)}</button>
+    </article>`).join('');
   return `
-    <section class="page-heading"><div><p class="eyebrow">ПАУЗА ДЛЯ СЕБЯ</p><h1>Вернись к своему ритму</h1><p class="page-subtitle">Выбери практику, которая подходит именно сейчас. Ритм — ориентир, а не требование.</p></div><span class="heading-icon">${icon('wind', 22)}</span></section>
-    <section class="breath-feature"><div class="breath-feature-glow"></div><div class="breath-feature-copy"><span class="dark-kicker">НАЧНИ С МИНУТЫ</span><h2>Вдохни.<br>Отпусти.</h2><p>Мягкий ориентир для внимания и стресса. Не нужно делать глубокие вдохи или терпеть неудобный ритм.</p><button type="button" class="button button-lime" data-action="open-practice" data-id="natural">${icon('play', 16)} Начать практику</button></div><div class="breath-art" aria-hidden="true"><div class="breath-art-orbit orbit-a"></div><div class="breath-art-orbit orbit-b"></div><div class="breath-art-core"><span></span></div><i class="breath-particle p-a"></i><i class="breath-particle p-b"></i><i class="breath-particle p-c"></i></div><div class="breath-feature-foot"><span>${icon('clock', 15)} 1–10 минут на выбор</span><span>${icon('sparkles', 15)} ${totalPractices} ${plural(totalPractices, ['практика', 'практики', 'практик'])} завершено</span></div></section>
-    <div class="section-title-row practice-title"><div><p class="eyebrow">БИБЛИОТЕКА ПРАКТИК</p><h2>Выбери, что подходит</h2></div></div>
-    <div class="practice-list-filter" role="group" aria-label="Фильтр практик"><button type="button" class="filter-chip ${!practiceFavoritesOnly?'active':''}" data-action="practice-favorites-filter" data-value="all" aria-pressed="${!practiceFavoritesOnly}">Все практики</button><button type="button" class="filter-chip ${practiceFavoritesOnly?'active':''}" data-action="practice-favorites-filter" data-value="favorites" aria-pressed="${practiceFavoritesOnly}">${icon('star',14)} Избранное (${favorites.size})</button></div>
-    <div class="practice-list">${list.length ? list.map((practice, index) => `<div class="practice-row-wrap"><button type="button" class="practice-row" data-action="open-practice" data-id="${practice.id}"><span class="practice-number">${String(index+1).padStart(2,'0')}</span><span class="practice-orb-thumb ${practice.tone}"><i></i></span><span class="practice-row-copy"><strong>${esc(practice.name)}</strong><small>${esc(practice.description)}</small><em>${esc(practice.mode)} · ${esc(practice.label)}</em></span><span class="practice-row-end"><small>${state.practiceSettings?.durations?.[practice.id] || Math.round(practice.duration/60)} мин</small>${icon('chevron',18)}</span></button><button type="button" class="practice-favorite ${favorites.has(practice.id)?'is-favorite':''}" data-action="toggle-practice-favorite" data-id="${practice.id}" aria-label="${favorites.has(practice.id)?'Убрать из':'Добавить в'} избранное: ${esc(practice.name)}" aria-pressed="${favorites.has(practice.id)}">${icon('star',17)}</button></div>`).join('') : `<div class="library-empty"><strong>В избранном пока пусто</strong><span>Нажми на звезду у любой практики — она появится здесь.</span></div>`}</div>
-    <section class="panel-card practice-analytics"><div class="panel-heading"><div><p class="eyebrow">ТВОЯ ПРАКТИКА</p><h2>Время, которое ты выделил(а) себе</h2></div><span class="metric-icon mint">${icon('activity',19)}</span></div><div class="analytics-range" role="group" aria-label="Период истории практик">${[['week','7 дней'],['month','30 дней'],['all','Весь путь']].map(([id,label])=>`<button type="button" class="filter-chip ${range===id?'active':''}" data-action="practice-range" data-id="${id}" aria-pressed="${range===id}">${label}</button>`).join('')}</div><div class="practice-stat-grid"><article><span>Завершено</span><strong>${stats.completedCount}</strong></article><article><span>Минут практики</span><strong>${stats.minutes}</strong></article><article><span>Остановлено раньше</span><strong>${stats.interruptedCount}</strong></article></div><div class="practice-top-list"><h3>К чему ты чаще возвращался(ась)</h3>${topPractices}</div><div class="practice-history-heading"><h3>Недавние сессии</h3><small>Последние 5</small></div>${historyMarkup}<p class="field-help">История отражает только сохранённые сессии. Практика — дополнительный способ переключить внимание или поддержать спокойствие, но не самостоятельное лечение никотиновой зависимости.</p></section>
-    <section class="soft-info safety-info">${icon('info', 17)}<p>Дыши комфортно, не старайся вдыхать глубже обычного. Если почувствуешь головокружение или дискомфорт, остановись и вернись к естественному дыханию. Для стресса NHS рекомендует комфортное дыхание без усилия; это не заменяет помощь при никотиновой зависимости.</p></section>
+    <section class="page-heading practices-page-heading"><div><h1>Практики</h1><p class="page-subtitle">Выбери технику и удобную длительность.</p></div><span class="heading-icon">${icon('wind', 22)}</span></section>
+    <section class="breath-feature breath-feature-v2"><div class="breath-feature-glow"></div><div class="breath-feature-copy"><h2>Дыши<br><em>в своём ритме.</em></h2><div class="breath-feature-actions"><button type="button" class="button button-lime" data-action="open-practice" data-id="natural">${icon('play', 16)} Начать мягко</button><button type="button" class="button button-glass" data-action="open-practice" data-id="craving-breath">${icon('wind', 16)} При тяге</button></div></div><div class="breath-art breath-art-v2" aria-hidden="true"><span class="breath-art-orbit orbit-a"></span><span class="breath-art-orbit orbit-b"></span><span class="breath-art-orbit orbit-c"></span><div class="breath-art-core"><span class="core-ribbon ribbon-a"></span><span class="core-ribbon ribbon-b"></span><i class="core-star"></i></div><canvas class="breath-particle-canvas hero-breath-canvas" data-breath-canvas data-phase="ambient" aria-hidden="true"></canvas><span class="breath-art-aura aura-a"></span><span class="breath-art-aura aura-b"></span></div><div class="breath-feature-foot"><span>${icon('clock', 15)} 1–10 минут</span><span>${icon('activity', 15)} ${totalPractices} ${plural(totalPractices, ['сессия', 'сессии', 'сессий'])}</span></div></section>
+    <section class="practice-library-section"><div class="section-title-row practice-title"><div><h2>Выбери практику</h2></div><button type="button" class="practice-favorites-toggle ${practiceFavoritesOnly?'is-active':''}" data-action="practice-favorites-filter" data-value="${practiceFavoritesOnly?'all':'favorites'}" aria-pressed="${practiceFavoritesOnly}">${icon('star',15)} ${practiceFavoritesOnly?'Все':'Избранное'} <span>${favorites.size}</span></button></div>
+      <div class="practice-category-filters" role="group" aria-label="Категория практик">${PRACTICE_CATEGORIES.map(item=>`<button type="button" class="practice-category-chip ${allowedCategory===item.id?'active':''}" data-action="practice-category-filter" data-value="${item.id}" aria-pressed="${allowedCategory===item.id}">${esc(item.label)}</button>`).join('')}</div>
+      <div class="practice-library-grid">${cards || `<div class="library-empty practice-empty-state">${icon('star',23)}<strong>Пока нет подходящих практик</strong><span>Убери фильтр избранного или сохрани звёздочкой подходящую технику.</span><button type="button" class="button button-secondary" data-action="practice-favorites-filter" data-value="all">Показать все практики</button></div>`}</div>
+    </section>
+    <section class="panel-card practice-analytics practice-analytics-v2"><div class="panel-heading"><div><h2>История практик</h2></div><span class="metric-icon mint">${icon('activity',19)}</span></div><div class="analytics-range" role="group" aria-label="Период истории практик">${[['week','7 дней'],['month','30 дней'],['all','Весь путь']].map(([id,label])=>`<button type="button" class="filter-chip ${range===id?'active':''}" data-action="practice-range" data-id="${id}" aria-pressed="${range===id}">${label}</button>`).join('')}</div><div class="practice-stat-grid"><article><span>Завершено</span><strong>${stats.completedCount}</strong></article><article><span>Минут практики</span><strong>${stats.minutes}</strong></article><article><span>Остановлено раньше</span><strong>${stats.interruptedCount}</strong></article></div><div class="practice-top-list"><h3>Часто выбираемые</h3>${topPractices}</div><div class="practice-history-heading"><h3>Недавние сессии</h3><small>Последние 5</small></div>${historyMarkup}<p class="field-help">История хранится на устройстве. Оценки отражают только твои ощущения.</p></section>
+    <section class="practice-evidence-note">${icon('book-open',17)}<div><strong>На чём основаны практики</strong><p>В основе — комфортное дыхание NHS, диафрагмальное дыхание Veterans Affairs, квадратный ритм Cleveland Clinic и советы Smokefree по тяге и осознанности. Отдельные схемы счёта — мягкие варианты, а не самостоятельные доказанные методы лечения зависимости.</p><div class="practice-source-links"><a href="https://www.nhs.uk/mental-health/self-help/guides-tools-and-activities/breathing-exercises-for-stress/" target="_blank" rel="noopener noreferrer">NHS</a><a href="https://veteranshealthlibrary.va.gov/encyclopedia/142%2C82451_VA" target="_blank" rel="noopener noreferrer">Veterans Affairs</a><a href="https://health.clevelandclinic.org/box-breathing-benefits" target="_blank" rel="noopener noreferrer">Cleveland Clinic</a><a href="https://smokefree.gov/quit-vaping-resources/dealing-with-vape-cravings" target="_blank" rel="noopener noreferrer">Smokefree.gov</a></div></div></section>
+    <section class="soft-info safety-info">${icon('info', 17)}<p>Дыши комфортно и не старайся вдыхать глубже обычного. Если почувствуешь головокружение, нехватку воздуха или дискомфорт, остановись и вернись к естественному дыханию. Практики могут поддерживать спокойствие и переключение внимания, но не заменяют доказательную помощь при никотиновой зависимости.</p></section>
   `;
 }
 
 function renderTips() {
   const normalizedSearch = tipSearch.trim().toLocaleLowerCase('ru-RU');
+  const allowedCategories = ['all', ...TIP_CATEGORIES.map(category => category.id).filter(id => id !== 'all')];
+  if (!allowedCategories.includes(tipCategory)) tipCategory = 'all';
   const tips = TIPS.filter(tip => {
+    if (HEALTH_TIP_IDS.has(tip.id)) return false;
     const haystack = `${tip.title} ${tip.summary || ''} ${tip.body} ${tip.steps?.join(' ') || ''}`.toLocaleLowerCase('ru-RU');
     return (tipCategory === 'all' || tip.category === tipCategory)
       && (tipLevel === 'all' || tip.level === tipLevel)
       && (tipSituation === 'all' || (tip.situations || []).includes(tipSituation))
       && (!normalizedSearch || haystack.includes(normalizedSearch));
   });
+  const categories = TIP_CATEGORIES.filter(category => allowedCategories.includes(category.id));
   return `
-    <section class="page-heading"><div><p class="eyebrow">ЗНАНИЯ БЕЗ ДАВЛЕНИЯ</p><h1>Библиотека поддержки</h1><p class="page-subtitle">Практические шаги, информация о симптомах и проверенные источники. Выбирай материал под свою ситуацию.</p></div><span class="heading-icon">${icon('book', 21)}</span></section>
-    <section class="tips-feature"><div class="tips-feature-icon">${icon('sparkles', 24)}</div><div><p class="eyebrow">ВАЖНО ПОМНИТЬ</p><h2>Поддержка — это не тест на силу воли.</h2><p>Приложение помогает наблюдать за привычками и искать подходящие действия. При необходимости медицинская помощь и консультирование — полноценная часть отказа.</p></div></section>
-    <label class="tip-search"><span>${icon('search',17)}</span><input type="search" data-field="tips.search" value="${esc(tipSearch)}" placeholder="Найти тему, ситуацию или совет" aria-label="Поиск по библиотеке"></label>
-    <div class="filter-chips" role="group" aria-label="Тема материала">${TIP_CATEGORIES.map(cat => `<button type="button" class="filter-chip ${tipCategory === cat.id ? 'active' : ''}" data-action="tip-category" data-id="${cat.id}" aria-pressed="${tipCategory === cat.id}">${cat.label}</button>`).join('')}</div>
-    <div class="tip-filter-row"><label class="form-field"><span>Формат</span><select data-field="tips.level">${TIP_LEVELS.map(item=>`<option value="${item.id}" ${tipLevel===item.id?'selected':''}>${item.label}</option>`).join('')}</select></label><label class="form-field"><span>Ситуация</span><select data-field="tips.situation">${TIP_SITUATIONS.map(item=>`<option value="${item.id}" ${tipSituation===item.id?'selected':''}>${item.label}</option>`).join('')}</select></label></div>
-    <div class="tips-results-heading"><strong>${tips.length} ${plural(tips.length,['материал','материала','материалов'])}</strong><span>с источниками</span></div>
-    <div class="tips-list">${tips.map(tip => `<article class="tip-card"><div class="tip-card-top"><span class="tip-category-mark">${icon(tip.category === 'now' ? 'wind' : tip.category === 'habits' ? 'rotate' : tip.category === 'support' ? 'heart' : tip.category === 'withdrawal' ? 'activity' : tip.category === 'evidence' ? 'shield' : 'sparkles', 17)}</span><span class="tip-evidence">${esc(tip.evidence)}</span></div><h2>${esc(tip.title)}</h2><p>${esc(tip.summary || tip.body)}</p><div class="tip-card-meta"><span>${icon('clock',14)} ${esc(tip.time)}</span><span>${tip.level === 'quick' ? 'Короткий шаг' : 'Материал'}</span></div><div class="tip-card-foot"><span>${icon('link',14)} Источник указан</span><button type="button" class="text-action" data-action="open-guide" data-id="${tip.id}">Открыть материал ${icon('arrow', 14)}</button></div></article>`).join('') || `<div class="library-empty">${icon('search',22)}<strong>Ничего не найдено</strong><span>Попробуй изменить запрос или фильтры.</span><button type="button" class="button button-secondary" data-action="reset-tip-filters">Сбросить фильтры</button></div>`}</div>
-    <section class="professional-card"><span class="professional-icon">${icon('heart', 20)}</span><div><h2>Поддержка специалиста — тоже сильный шаг</h2><p>Руководство ВОЗ для взрослых, употребляющих табак, рассматривает поведенческую поддержку, цифровые инструменты как дополнение и подходящие медицинские варианты. Для вейпинга и конкретной ситуации рекомендации нужно уточнить у специалиста.</p><button type="button" class="button button-dark" data-action="open-support">Что обсудить со специалистом ${icon('arrow', 15)}</button></div></section>
-    <section class="sources-panel"><p class="eyebrow">ИСТОЧНИКИ</p><h2>Материалы для самостоятельного чтения</h2><a href="https://www.who.int/campaigns/world-no-tobacco-day/2026/quit-today" target="_blank" rel="noopener noreferrer">ВОЗ · Quit today: пошаговый план отказа от табака и никотина (2026) ${icon('external',14)}</a><a href="https://www.who.int/publications/i/item/9789240096431" target="_blank" rel="noopener noreferrer">ВОЗ · Клиническое руководство по отказу от табака у взрослых (2024) ${icon('external',14)}</a><a href="https://www.who.int/news-room/questions-and-answers/item/how-to-quit-e-cigarettes" target="_blank" rel="noopener noreferrer">ВОЗ · Как отказаться от электронных сигарет ${icon('external',14)}</a><a href="https://www.cdc.gov/tobacco/campaign/tips/quit-smoking/7-common-withdrawal-symptoms/index.html" target="_blank" rel="noopener noreferrer">CDC · Симптомы отмены и способы справляться с тягой ${icon('external',14)}</a><a href="https://www.nhs.uk/mental-health/self-help/guides-tools-and-activities/breathing-exercises-for-stress/" target="_blank" rel="noopener noreferrer">NHS · Дыхательные упражнения при стрессе ${icon('external',14)}</a><p>Краткие материалы в приложении адаптированы своими словами. Руководство ВОЗ посвящено прекращению употребления табака у взрослых и не подменяет индивидуальные рекомендации по электронным сигаретам или лекарствам.</p></section>
-    <p class="content-disclaimer">Информация образовательная и не заменяет индивидуальную медицинскую консультацию. При тяжёлых, необычных или сохраняющихся симптомах обратись к медицинскому специалисту.</p>
+    <section class="page-heading"><div><h1>Советы</h1><p class="page-subtitle">Рекомендации по ситуациям и привычкам.</p></div><span class="heading-icon">${icon('book', 21)}</span></section>
+    <label class="tip-search"><span>${icon('search',17)}</span><input type="search" data-field="tips.search" value="${esc(tipSearch)}" placeholder="Найти совет или ситуацию" aria-label="Поиск по советам"></label>
+    <div class="tips-filter-dropdowns"><label class="form-field"><span>Тема</span><select data-field="tips.category">${categories.map(item=>`<option value="${item.id}" ${tipCategory===item.id?'selected':''}>${esc(item.label)}</option>`).join('')}</select></label><label class="form-field"><span>Формат</span><select data-field="tips.level">${TIP_LEVELS.map(item=>`<option value="${item.id}" ${tipLevel===item.id?'selected':''}>${esc(item.label)}</option>`).join('')}</select></label><label class="form-field"><span>Ситуация</span><select data-field="tips.situation">${TIP_SITUATIONS.map(item=>`<option value="${item.id}" ${tipSituation===item.id?'selected':''}>${esc(item.label)}</option>`).join('')}</select></label></div>
+    <div class="tips-results-heading"><strong>${tips.length} ${plural(tips.length,['совет','совета','советов'])}</strong><span>из библиотеки</span></div>
+    <div class="tips-list">${tips.map(tip => `<article class="tip-card minimalist-tip-card"><div class="tip-card-top"><span class="tip-category-mark">${icon(tip.category === 'now' ? 'wind' : tip.category === 'habits' ? 'rotate' : tip.category === 'support' ? 'heart' : 'sparkles', 17)}</span><span class="tip-evidence">${esc(tip.evidence)}</span></div><h2>${esc(tip.title)}</h2><p>${esc(tip.summary || tip.body)}</p><div class="tip-card-meta"><span>${icon('clock',14)} ${esc(tip.time)}</span><span>${tip.level === 'quick' ? 'Короткий шаг' : 'Материал'}</span></div><div class="tip-card-foot"><span>${icon('bookmark',14)} ${esc(tip.category === 'now' ? 'Когда тянет' : tip.category === 'habits' ? 'Привычки' : tip.category === 'plan' ? 'Планирование' : 'Поддержка')}</span><button type="button" class="text-action" data-action="open-guide" data-id="${tip.id}">Подробнее ${icon('arrow', 14)}</button></div></article>`).join('') || `<div class="library-empty">${icon('search',22)}<strong>Ничего не найдено</strong><span>Попробуй изменить запрос или фильтры.</span><button type="button" class="button button-secondary" data-action="reset-tip-filters">Сбросить фильтры</button></div>`}</div>
+    <section class="health-library-teaser"><span class="health-library-teaser-icon">${icon('heart-pulse', 19)}</span><div><strong>Информация о здоровье — отдельно</strong><p>Материалы о симптомах отмены, доказательных способах помощи и обращении к специалисту собраны во вкладке «Здоровье».</p></div><button type="button" class="button button-secondary" data-action="go-health">Открыть ${icon('arrow', 14)}</button></section>
+    <p class="content-disclaimer">Советы носят образовательный характер и не заменяют индивидуальную медицинскую консультацию.</p>
+  `;
+}
+
+function renderHealth() {
+  const metrics = getProgressAnalytics(state, 'month');
+  const practiceStats = getPracticeAnalytics(state, 'month');
+  const review = getWeeklyReviewMetrics(state);
+  const checkinDate = healthCheckinDate <= today() ? healthCheckinDate : today();
+  const checkin = state.dailyLogs?.[checkinDate] || {};
+  const triggerLabels = new Map(TRIGGER_OPTIONS);
+  const moodLabels = new Map(EMOTION_OPTIONS);
+  const renderRows = (items, labels, empty) => items.length
+    ? `<div class="health-insight-list">${items.slice(0, 4).map(([id, count]) => `<div class="health-insight-row"><span>${esc(labels.get(id) || id)}</span><strong>${count}</strong><small>${plural(count, ['отметка', 'отметки', 'отметок'])}</small></div>`).join('')}</div>`
+    : `<p class="health-empty-note">${empty}</p>`;
+  const articles = TIPS.filter(item => HEALTH_TIP_IDS.has(item.id));
+  const breathEvidence = metrics.ratedBreathCount
+    ? `В ${metrics.lowerAfterBreath} из ${metrics.ratedBreathCount} записей пользовательская оценка тяги после практики была ниже оценки до неё. Это личное наблюдение, не доказательство причинного эффекта.`
+    : 'Если оценивать тягу до и после практики, можно наблюдать личные изменения. Пока сравнений недостаточно для вывода.';
+  return `
+    <section class="page-heading health-page-heading"><div><h1>Здоровье</h1><p class="page-subtitle">Самочувствие и помощь.</p></div><span class="heading-icon">${icon('heart-pulse', 22)}</span></section>
+    <section class="health-hero"><div class="health-hero-orb">${icon('heart-pulse', 29)}</div><div><p class="eyebrow">ТВОЁ САМОЧУВСТВИЕ</p><h2>Самочувствие и триггеры</h2><p>Отмечай ситуации и эмоции, чтобы замечать повторения. Записи не являются диагнозом.</p></div><button type="button" class="button button-lime" data-action="open-support">Варианты помощи ${icon('arrow', 15)}</button></section>
+    <section class="health-checkin-card" aria-labelledby="health-checkin-title">
+      <div class="home-section-heading"><div><p class="eyebrow">ЛИЧНЫЙ ДНЕВНИК</p><h2 id="health-checkin-title">Как ты себя чувствуешь?</h2></div><span class="home-section-icon">${icon('heart', 19)}</span></div>
+      <label class="form-field health-checkin-date"><span>Дата наблюдения</span><input type="date" data-field="health.date" value="${esc(checkinDate)}" max="${today()}"></label>
+      <div class="trigger-field"><div class="trigger-field-heading"><strong>Какие ситуации влияли?</strong><small>Необязательно · можно выбрать несколько</small></div><div class="trigger-chips" role="group" aria-label="Ситуации и триггеры">${TRIGGER_OPTIONS.map(([id,label]) => `<button type="button" class="trigger-chip ${(checkin.triggers || []).includes(id) ? 'selected' : ''}" data-action="toggle-trigger" data-date="${checkinDate}" data-id="${id}" aria-pressed="${(checkin.triggers || []).includes(id)}">${esc(label)}</button>`).join('')}</div></div>
+      <div class="trigger-field mood-field"><div class="trigger-field-heading"><strong>Какое состояние было ближе?</strong><small>Одна отметка по желанию</small></div><div class="trigger-chips" role="group" aria-label="Эмоциональное состояние">${EMOTION_OPTIONS.map(([id,label]) => `<button type="button" class="trigger-chip ${(checkin.mood || '') === id ? 'selected' : ''}" data-action="set-day-mood" data-date="${checkinDate}" data-id="${id}" aria-pressed="${(checkin.mood || '') === id}">${esc(label)}</button>`).join('')}</div></div>
+      <label class="form-field day-note-field"><span>Заметка к наблюдению</span><textarea rows="3" maxlength="4000" data-field="day.note" data-date="${checkinDate}" placeholder="Что происходило? Что помогло? Можно оставить поле пустым.">${esc(checkin.note || '')}</textarea></label>
+      <p class="field-help">Записи сохраняются на этом устройстве. Это личные наблюдения, а не диагноз и не доказательство причины.</p>
+    </section>
+    <section class="health-section-grid">
+      <article class="health-insight-card"><div class="health-insight-heading"><span>${icon('message-circle', 18)}</span><div><h2>Ситуации</h2><p>За последние 30 дней</p></div></div>${renderRows(metrics.topTriggers, triggerLabels, 'Пока мало отмеченных ситуаций. Если захочешь, фиксируй триггеры в дневнике тяги или календаре.')}</article>
+      <article class="health-insight-card"><div class="health-insight-heading"><span>${icon('heart', 18)}</span><div><h2>Эмоциональный фон</h2><p>По твоим отметкам</p></div></div>${renderRows(metrics.topMoods, moodLabels, 'Эмоциональные состояния пока не отмечались. Можно оставить этот раздел пустым.')}</article>
+      <article class="health-insight-card"><div class="health-insight-heading"><span>${icon('wind', 18)}</span><div><h2>Практики и тяга</h2><p>Личные наблюдения</p></div></div><div class="health-practice-stat"><strong>${practiceStats.completedCount}</strong><span>завершено</span><strong>${practiceStats.minutes}</strong><span>минут</span></div><p>${esc(breathEvidence)}</p><button type="button" class="text-action" data-action="select-health-section" data-section="practices">Открыть практики ${icon('arrow', 14)}</button></article>
+      <article class="health-insight-card"><div class="health-insight-heading"><span>${icon('calendar-check', 18)}</span><div><h2>Неделя</h2><p>Наблюдения без оценок</p></div></div><p>${esc(weeklyReviewMessage(review))}</p><button type="button" class="button button-secondary full-button" data-action="open-weekly-review">Посмотреть недельный обзор ${icon('arrow', 14)}</button></article>
+    </section>
+    <section class="health-library-section"><div class="home-section-heading"><div><p class="eyebrow">ПРОВЕРЕННАЯ ИНФОРМАЦИЯ</p><h2>Что может помочь</h2></div><span class="home-section-icon">${icon('book-open', 19)}</span></div><div class="health-article-list">${articles.map(article => `<article class="health-article-row"><span class="health-article-mark">${icon(article.id === 'breathing' ? 'wind' : article.id === 'professional' || article.id === 'support-network' ? 'heart-handshake' : 'shield-check', 18)}</span><div><p class="eyebrow">${esc(article.evidence)}</p><h3>${esc(article.title)}</h3><p>${esc(article.summary)}</p><button type="button" class="text-action" data-action="open-guide" data-id="${article.id}">Читать материал ${icon('arrow', 14)}</button></div></article>`).join('')}</div></section>
+    <section class="health-sources-card"><p class="eyebrow">ОФИЦИАЛЬНЫЕ ИСТОЧНИКИ</p><h2>Материалы для самостоятельного чтения</h2><a href="https://www.who.int/campaigns/world-no-tobacco-day/2026/quit-today" target="_blank" rel="noopener noreferrer">ВОЗ · Пошаговый план отказа от табака и никотина (2026) ${icon('external',14)}</a><a href="https://www.who.int/news-room/questions-and-answers/item/how-to-quit-e-cigarettes" target="_blank" rel="noopener noreferrer">ВОЗ · Как отказаться от электронных сигарет ${icon('external',14)}</a><a href="https://www.who.int/publications/i/item/9789240096431" target="_blank" rel="noopener noreferrer">ВОЗ · Клиническое руководство по отказу от табака у взрослых (2024) ${icon('external',14)}</a><a href="https://www.nhs.uk/mental-health/self-help/guides-tools-and-activities/breathing-exercises-for-stress/" target="_blank" rel="noopener noreferrer">NHS · Дыхательные упражнения при стрессе ${icon('external',14)}</a><p>Рекомендации для отказа от табака у взрослых не следует автоматически переносить на каждый случай вейпинга, лекарства или индивидуальные медицинские решения. При необходимости обсуди подходящие варианты со специалистом.</p></section>
+    <p class="content-disclaimer">Информация носит образовательный характер. Если симптомы выраженные, необычные или долго мешают повседневной жизни, обратись к медицинскому специалисту.</p>
   `;
 }
 
@@ -425,11 +699,45 @@ function renderGuideOverlay(id) {
 }
 
 function renderProfile() {
+  if (profileSubpage === 'settings') return renderProfileSettings();
+  const profile = state.profile || { displayName: '', personalReason: '' };
+  const name = String(profile.displayName || '').trim();
+  const initial = name ? esc(Array.from(name)[0].toLocaleUpperCase('ru-RU')) : icon('user', 26);
+  const sessions = state.practiceSessions.filter(item => item.completed !== false).length;
+  const loggedDays = Object.keys(state.dailyLogs || {}).filter(date => date <= today()).length;
+  const goal = state.plan.strategy === 'quit' ? 'Полный отказ' : 'Постепенное сокращение';
+  const unit = getUnitLabel(state);
+  return `
+    <section class="page-heading"><div><h1>Профиль</h1><p class="page-subtitle">Личные данные и твой путь.</p></div><span class="heading-icon">${icon('user', 21)}</span></section>
+    <section class="profile-hero-card panel-card">
+      <div class="profile-hero-top"><span class="profile-avatar profile-avatar-large">${initial}</span><div class="profile-hero-copy"><p class="eyebrow">ЛИЧНЫЙ ПРОФИЛЬ</p><h2>${name ? esc(name) : 'Твой профиль'}</h2><p>${esc(goal)}</p></div><span class="profile-local-badge">${icon('lock', 13)} На устройстве</span></div>
+      <div class="profile-edit-fields">
+        <label class="form-field"><span>Как к тебе обращаться?</span><input type="text" maxlength="48" autocomplete="nickname" data-field="profile.displayName" value="${esc(profile.displayName || '')}" placeholder="Имя или короткое обращение"></label>
+        <label class="form-field"><span>Почему для тебя это важно?</span><textarea rows="3" maxlength="240" data-field="profile.personalReason" placeholder="Личная причина — по желанию">${esc(profile.personalReason || '')}</textarea><small class="field-help">Текст виден только в твоём локальном профиле.</small></label>
+      </div>
+    </section>
+    ${profile.personalReason ? `<section class="profile-reason-card"><span>${icon('heart', 18)}</span><div><strong>Твоя причина</strong><p>${esc(profile.personalReason)}</p></div></section>` : ''}
+    <section class="profile-stats-grid" aria-label="Твоя активность">
+      <article class="profile-stat-card"><span>${icon('calendar-check', 18)}</span><strong>${loggedDays}</strong><small>дней с записями</small></article>
+      <article class="profile-stat-card"><span>${icon('wind', 18)}</span><strong>${sessions}</strong><small>завершённых практик</small></article>
+      <article class="profile-stat-card"><span>${icon('activity', 18)}</span><strong>${state.cravingLogs.length}</strong><small>записей о тяге</small></article>
+    </section>
+    <section class="profile-goal-card panel-card"><div class="profile-goal-mark">${icon('target', 20)}</div><div><p class="eyebrow">ТЕКУЩИЙ ПЛАН</p><h2>${esc(goal)}</h2><p>${state.plan.strategy === 'quit' ? `Отсчёт с ${esc(formatShortDate(state.plan.startDate))}` : `Отслеживаешь: ${esc(unit)}`}</p>${state.plan.strategy === 'reduce' && state.plan.dailyTarget > 0 ? `<div class="profile-goal-target">Цель на день: <strong>${state.plan.dailyTarget} ${esc(unit)}</strong></div>` : ''}</div></section>
+    <button class="profile-settings-link" type="button" data-action="open-profile-settings"><span class="profile-settings-icon">${icon('settings', 21)}</span><span class="profile-settings-copy"><strong>Настройки приложения</strong><small>Стратегия, единицы учёта, напоминания, практики и резервные копии</small></span>${icon('chevron', 18)}</button>
+    <p class="profile-privacy-note">${icon('lock', 14)} Профиль хранится на этом устройстве. Аккаунт не нужен.</p>
+  `;
+}
+
+function renderProfileSettings() {
   const p = state.plan, tracking = state.tracking, finance = state.finance, prefs = state.preferences;
   const installed = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
   return `
-    <section class="page-heading"><div><p class="eyebrow">ТВОЁ ПРОСТРАНСТВО</p><h1>Профиль</h1><p class="page-subtitle">Настрой «Выдох» под себя. Можно менять решения по ходу пути.</p></div><span class="heading-icon">${icon('user', 21)}</span></section>
-    <section class="profile-summary"><span class="profile-avatar">${icon('leaf', 26)}</span><div><p class="eyebrow">ТВОЙ ПОДХОД</p><h2>${p.strategy === 'quit' ? 'Полный отказ' : 'Постепенное сокращение'}</h2><p>${p.strategy === 'quit' ? 'Движение к жизни без никотина' : 'Отслеживание выбранного показателя'}</p></div><span class="profile-summary-status">${icon('check', 15)}</span></section>
+    <section class="page-heading settings-page-heading"><div><button class="profile-back-link" type="button" data-action="back-profile-settings">${icon('chevron', 14)} Профиль</button><h1>Настройки</h1><p class="page-subtitle">Стратегия, учёт и параметры приложения.</p></div><span class="heading-icon">${icon('settings', 21)}</span></section>
+    <section class="settings-section appearance-settings"><div class="settings-heading"><span class="settings-heading-icon">${icon('palette', 19)}</span><div><h2>Внешний вид</h2><p>Выбери оформление, комфортное для тебя.</p></div></div><div class="form-card">
+      <label class="form-field"><span>Тема приложения</span><select data-field="preferences.theme"><option value="light" ${prefs.theme === 'light' ? 'selected' : ''}>Светлая</option><option value="dark" ${prefs.theme === 'dark' ? 'selected' : ''}>Тёмная</option><option value="system" ${prefs.theme === 'system' ? 'selected' : ''}>Как в системе</option></select></label>
+      <div class="theme-preview-row"><div class="theme-preview light-preview"><span></span><i></i><b></b><small>Светлая</small></div><div class="theme-preview dark-preview"><span></span><i></i><b></b><small>Тёмная</small></div></div>
+      <p class="field-help">Выбор сохраняется на этом устройстве. В режиме «Как в системе» тема будет следовать настройке оформления устройства.</p>
+    </div></section>
     <section class="settings-section"><div class="settings-heading"><span class="settings-heading-icon">${icon('target', 19)}</span><div><h2>Стратегия и цель</h2><p>Можно переключить в любой момент.</p></div></div><div class="form-card">
       <label class="form-field"><span>Мой подход</span><select data-field="plan.strategy"><option value="quit" ${p.strategy === 'quit' ? 'selected' : ''}>Полный отказ</option><option value="reduce" ${p.strategy === 'reduce' ? 'selected' : ''}>Постепенное сокращение</option></select></label>
       <label class="form-field"><span>Дата начала</span><input type="date" data-field="plan.startDate" value="${esc(p.startDate)}" max="${today()}"></label>
@@ -463,7 +771,7 @@ function renderProfile() {
       <button class="data-action" type="button" data-action="import-data"><span>${icon('upload', 19)}</span><strong>Восстановить из файла</strong>${icon('chevron', 17)}</button>
       <div class="data-privacy-note">${icon('lock', 15)} Данные хранятся в браузере на этом устройстве. При очистке данных сайта они могут быть удалены. Сделай резервную копию перед сменой телефона.</div>
     </div></section>
-    <section class="about-card"><span class="about-mark">${icon('leaf', 22)}</span><div><h2>Выдох <span>v1.2.0</span></h2><p>Поддержка без давления. Прогресс без сравнения с другими.</p><small>${installed ? 'Приложение установлено' : 'Веб-версия · можно установить из браузера'}</small></div></section>
+    <section class="about-card"><span class="about-mark"><img src="./brand-mark.svg" alt=""></span><div><h2>ВЫДОХ <span>v2.0.1</span></h2><p>Сила в твоём дыхании</p><small>${installed ? 'Приложение установлено' : 'Веб-версия · можно установить из браузера'}</small></div></section>
     <div class="danger-zone"><button type="button" class="text-action danger-text" data-action="reset-data">Сбросить данные приложения</button></div>
   `;
 }
@@ -485,7 +793,7 @@ function renderOverlay() {
 }
 
 function renderOnboardingOverlay() {
-  return `<div class="modal-backdrop onboarding-backdrop" data-action="backdrop-close"><section class="modal onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title"><div class="onboarding-art"><div class="onboarding-orb orb-one"></div><div class="onboarding-orb orb-two"></div><div class="onboarding-logo">${icon('wind', 29)}</div></div><p class="eyebrow">ДОБРО ПОЖАЛОВАТЬ В «ВЫДОХ»</p><h2 id="onboarding-title">Твой путь.<br><em>Твой собственный ритм.</em></h2><p class="modal-lead">Подстроим поддержку под твою цель. Это займёт меньше минуты — настройки можно изменить позже.</p><form id="onboarding-form" class="onboarding-form"><label class="form-field"><span>С чего хочешь начать?</span><select name="strategy" id="onboard-strategy"><option value="quit" ${state.plan.strategy === 'quit' ? 'selected' : ''}>Полный отказ от никотина</option><option value="reduce" ${state.plan.strategy === 'reduce' ? 'selected' : ''}>Постепенное сокращение</option></select></label><label class="form-field"><span>Дата начала</span><input type="date" name="startDate" value="${esc(state.plan.startDate)}" max="${today()}" required></label><div class="form-field"><span>Что удобно отслеживать?</span><select name="unit"><option value="puffs">Затяжки</option><option value="sessions">Сеансы использования</option><option value="pods">Картриджи / устройства</option><option value="custom">Свой показатель</option></select></div><label class="form-field" id="onboard-target-field"><span>Цель на день <small>можно задать позже</small></span><input type="number" name="target" min="0" max="99999" placeholder="Не задана"></label><button type="submit" class="button button-primary full-button">Начать свой путь ${icon('arrow', 16)}</button></form><p class="onboarding-privacy">${icon('lock', 13)} Без аккаунта. Твои данные остаются на устройстве.</p><button type="button" class="onboarding-skip" data-action="onboarding-skip">Настроить позже</button></section></div>`;
+  return `<div class="modal-backdrop onboarding-backdrop" data-action="backdrop-close"><section class="modal onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title"><div class="onboarding-art"><div class="onboarding-orb orb-one"></div><div class="onboarding-orb orb-two"></div><div class="onboarding-logo"><img src="./brand-mark.svg" alt=""></div></div><p class="eyebrow">ДОБРО ПОЖАЛОВАТЬ В «ВЫДОХ»</p><h2 id="onboarding-title">Твой путь.<br><em>Твой собственный ритм.</em></h2><p class="modal-lead">Подстроим поддержку под твою цель. Это займёт меньше минуты — настройки можно изменить позже.</p><form id="onboarding-form" class="onboarding-form"><label class="form-field"><span>С чего хочешь начать?</span><select name="strategy" id="onboard-strategy"><option value="quit" ${state.plan.strategy === 'quit' ? 'selected' : ''}>Полный отказ от никотина</option><option value="reduce" ${state.plan.strategy === 'reduce' ? 'selected' : ''}>Постепенное сокращение</option></select></label><label class="form-field"><span>Дата начала</span><input type="date" name="startDate" value="${esc(state.plan.startDate)}" max="${today()}" required></label><div class="form-field"><span>Что удобно отслеживать?</span><select name="unit"><option value="puffs">Затяжки</option><option value="sessions">Сеансы использования</option><option value="pods">Картриджи / устройства</option><option value="custom">Свой показатель</option></select></div><label class="form-field" id="onboard-target-field"><span>Цель на день <small>можно задать позже</small></span><input type="number" name="target" min="0" max="99999" placeholder="Не задана"></label><button type="submit" class="button button-primary full-button">Начать свой путь ${icon('arrow', 16)}</button></form><p class="onboarding-privacy">${icon('lock', 13)} Без аккаунта. Твои данные остаются на устройстве.</p><button type="button" class="onboarding-skip" data-action="onboarding-skip">Настроить позже</button></section></div>`;
 }
 
 function renderDayOverlay(date) {
@@ -496,7 +804,7 @@ function renderDayOverlay(date) {
   const statusText = unknownUseAmount ? 'Употребление отмечено; количество не указано' : { before: 'До выбранной даты начала', future: 'Будущий день', clear: state.dailyLogs[date]?.noUseConfirmed ? 'День отмечен как без употребления' : 'Нет записей об употреблении', unrecorded: 'Нет измерения за этот день', within: 'В пределах выбранной цели', used: 'Есть запись об употреблении', untracked: 'Старый показатель учтён в другой единице' }[status];
   const noUseToggle = canMarkNoUse(date) ? `<button type="button" class="button button-secondary full-button" data-action="toggle-no-use" data-date="${date}">${state.dailyLogs[date]?.noUseConfirmed ? 'Снять отметку о дне без употребления' : 'Отметить день без употребления'}</button>` : '';
 
-  return `<div class="modal-backdrop" data-action="backdrop-close"><section class="modal sheet-modal" role="dialog" aria-modal="true" aria-labelledby="day-title"><div class="modal-handle"></div><div class="modal-heading"><div><p class="eyebrow">ЗАПИСЬ ЗА ДЕНЬ</p><h2 id="day-title">${esc(formatLongDate(date))}</h2></div><button type="button" class="quiet-icon" data-action="close-overlay" aria-label="Закрыть">${icon('close', 19)}</button></div><div class="day-status-line"><span class="status-dot status-${status}"></span>${statusText}</div><div class="day-amount-editor"><div><span class="eyebrow">ОТМЕЧЕННЫЙ ПОКАЗАТЕЛЬ</span><strong>${unknownUseAmount ? '—' : log.amount}</strong><small>${unknownUseAmount ? 'количество не указано' : esc(getUnitLabel(state))}</small></div><div class="stepper"><button type="button" data-action="adjust-day-amount" data-date="${date}" data-delta="-1" ${log.amount <= 0 ? 'disabled' : ''} aria-label="Уменьшить">${icon('minus', 19)}</button><button type="button" data-action="adjust-day-amount" data-date="${date}" data-delta="1" aria-label="Увеличить">${icon('plus', 19)}</button></div></div><div class="trigger-field"><div class="trigger-field-heading"><strong>Что могло повлиять?</strong><small>Необязательно · выбери всё подходящее</small></div><div class="trigger-chips" role="group" aria-label="Возможные триггеры">${TRIGGER_OPTIONS.map(([id, label]) => `<button type="button" class="trigger-chip ${(log.triggers || []).includes(id) ? 'selected' : ''}" data-action="toggle-trigger" data-date="${date}" data-id="${id}" aria-pressed="${(log.triggers || []).includes(id)}">${label}</button>`).join('')}</div></div><div class="trigger-field mood-field"><div class="trigger-field-heading"><strong>Как ты себя чувствовал(а)?</strong><small>Одна отметка по желанию</small></div><div class="trigger-chips" role="group" aria-label="Эмоциональное состояние">${EMOTION_OPTIONS.map(([id, label]) => `<button type="button" class="trigger-chip ${(log.mood || '') === id ? 'selected' : ''}" data-action="set-day-mood" data-date="${date}" data-id="${id}" aria-pressed="${(log.mood || '') === id}">${label}</button>`).join('')}</div></div><label class="form-field day-note-field"><span>Заметка</span><textarea rows="4" maxlength="4000" data-field="day.note" data-date="${date}" placeholder="Что происходило? Что помогло? Без оценок — только наблюдения.">${esc(log.note)}</textarea></label><div class="modal-actions">${noUseToggle}<button type="button" class="button button-primary full-button" data-action="close-overlay">Готово</button></div><p class="field-help">Изменения сохраняются на этом устройстве. Прошлые записи не влияют на сегодняшнюю цель автоматически.</p></section></div>`;
+  return `<div class="modal-backdrop" data-action="backdrop-close"><section class="modal sheet-modal" role="dialog" aria-modal="true" aria-labelledby="day-title"><div class="modal-handle"></div><div class="modal-heading"><div><p class="eyebrow">ЗАПИСЬ ЗА ДЕНЬ</p><h2 id="day-title">${esc(formatLongDate(date))}</h2></div><button type="button" class="quiet-icon" data-action="close-overlay" aria-label="Закрыть">${icon('close', 19)}</button></div><div class="day-status-line"><span class="status-dot status-${status}"></span>${statusText}</div><div class="day-amount-editor"><div><span class="eyebrow">ОТМЕЧЕННЫЙ ПОКАЗАТЕЛЬ</span><strong>${unknownUseAmount ? '—' : log.amount}</strong><small>${unknownUseAmount ? 'количество не указано' : esc(getUnitLabel(state))}</small></div><div class="stepper"><button type="button" data-action="adjust-day-amount" data-date="${date}" data-delta="-1" ${log.amount <= 0 ? 'disabled' : ''} aria-label="Уменьшить">${icon('minus', 19)}</button><button type="button" data-action="adjust-day-amount" data-date="${date}" data-delta="1" aria-label="Увеличить">${icon('plus', 19)}</button></div></div><div class="health-library-teaser day-health-teaser"><span class="health-library-teaser-icon">${icon('heart-pulse', 18)}</span><div><strong>Самочувствие и триггеры</strong><p>Заметки, эмоции и ситуации теперь собраны в разделе «Здоровье».</p></div><button type="button" class="button button-secondary" data-action="go-health">Открыть</button></div><div class="modal-actions">${noUseToggle}<button type="button" class="button button-primary full-button" data-action="close-overlay">Готово</button></div><p class="field-help">История употребления остаётся в календаре. Самочувствие, триггеры и заметки редактируются в разделе «Здоровье» с выбором даты.</p></section></div>`;
 }
 
 function renderPracticeOverlay(id) {
@@ -506,13 +814,18 @@ function renderPracticeOverlay(id) {
   const running = !!practiceTimer && !practicePaused;
   const started = running || practicePaused || practiceElapsedBeforePause > 0;
   const favorites = new Set(state.practiceSettings?.favorites || []);
-  return `<div class="modal-backdrop dark-backdrop"><section class="practice-modal" role="dialog" aria-modal="true" aria-labelledby="practice-title"><div class="practice-modal-top"><button type="button" class="dark-icon-button" data-action="close-overlay" aria-label="Закрыть">${icon('close', 20)}</button><span class="dark-kicker">ПРАКТИКА ДЛЯ СЕБЯ</span><div class="practice-top-actions"><button type="button" class="dark-icon-button ${favorites.has(p.id)?'is-favorite':''}" data-action="toggle-practice-favorite" data-id="${p.id}" aria-label="${favorites.has(p.id)?'Убрать из':'Добавить в'} избранное" aria-pressed="${favorites.has(p.id)}">${icon('star',18)}</button><button type="button" class="dark-icon-button" data-action="toggle-sound" aria-label="${state.preferences.sound ? 'Выключить' : 'Включить'} звук" aria-pressed="${state.preferences.sound}">${icon(state.preferences.sound ? 'volume' : 'volumeOff', 19)}</button><button type="button" class="dark-icon-button" data-action="toggle-vibration" aria-label="${state.practiceSettings.vibration?'Выключить':'Включить'} вибрацию" aria-pressed="${state.practiceSettings.vibration}">${icon('activity',18)}</button></div></div><div class="practice-stage"><div class="practice-halo halo-1"></div><div class="practice-halo halo-2"></div><div class="practice-halo halo-3"></div><div id="active-breath-orb" class="active-breath-orb" data-phase="rest"><span></span><i></i></div><div class="practice-stage-caption"><span id="breath-phase" aria-live="polite" aria-atomic="true">${started?'Готов(а) продолжить':'Выбери свой ритм'}</span><small id="breath-instruction" aria-live="polite" aria-atomic="true">${esc(p.guidance || 'Найди удобное положение и дыши комфортно.')}</small></div></div><div class="practice-detail"><p class="dark-kicker">${esc(p.label)}</p><h2 id="practice-title">${esc(p.name)}</h2><p>${esc(p.description)}</p>${!started?`<label class="practice-duration-field"><span>Продолжительность</span><select data-field="practice.duration" aria-label="Продолжительность практики">${[1,3,5,10].map(minutes=>`<option value="${minutes}" ${Math.round(p.duration/60)===minutes?'selected':''}>${minutes} ${plural(minutes,['минута','минуты','минут'])}</option>`).join('')}</select></label>`:`<div class="practice-session-meta"><span>${icon('clock',14)} Сессия ${Math.round(p.duration/60)} мин</span><span>${state.practiceSettings.vibration?icon('activity',14)+' Вибрация включена':''}</span></div>`}<div class="practice-timer" id="practice-timer" aria-live="off">${formatDuration(started?Math.max(0,p.duration-practiceElapsedBeforePause):p.duration)}</div><div class="practice-track"><span id="practice-track-fill" style="width:0%"></span></div><div class="practice-controls"><button type="button" class="button button-lime" id="practice-toggle" data-action="practice-toggle">${icon(running?'pause':'play',17)} ${running?'Пауза':started?'Продолжить':'Начать'}</button><button type="button" class="button button-dark-outline" data-action="practice-stop">${started?'Завершить':'Закрыть'}</button></div><p class="practice-footnote">Дыши без усилия. Задержки необязательны. При головокружении или дискомфорте остановись и вернись к обычному дыханию.</p></div></section></div>`;
+  const phaseName = running ? 'Практика идёт' : practicePaused ? 'Пауза' : started ? 'Продолжить' : 'Готово к началу';
+  return `<div class="modal-backdrop dark-backdrop practice-backdrop"><section class="practice-modal practice-modal-v2 ${running ? 'is-session-running' : practicePaused ? 'is-session-paused' : 'is-session-ready'}" data-session-state="${running ? 'running' : practicePaused ? 'paused' : 'ready'}" role="dialog" aria-modal="true" aria-labelledby="practice-title"><div class="practice-modal-top"><button type="button" class="dark-icon-button" data-action="close-overlay" aria-label="Закрыть">${icon('close', 20)}</button><span class="dark-kicker"><span class="live-dot"></span> ПРАКТИКА</span><div class="practice-top-actions"><button type="button" class="dark-icon-button ${favorites.has(p.id)?'is-favorite':''}" data-action="toggle-practice-favorite" data-id="${p.id}" aria-label="${favorites.has(p.id)?'Убрать из':'Добавить в'} избранное" aria-pressed="${favorites.has(p.id)}">${icon('star',18)}</button><button type="button" class="dark-icon-button" data-action="toggle-sound" aria-label="${state.preferences.sound ? 'Выключить' : 'Включить'} звук" aria-pressed="${state.preferences.sound}">${icon(state.preferences.sound ? 'volume' : 'volumeOff', 19)}</button><button type="button" class="dark-icon-button" data-action="toggle-vibration" aria-label="${state.practiceSettings.vibration?'Выключить':'Включить'} вибрацию" aria-pressed="${state.practiceSettings.vibration}">${icon('activity',18)}</button></div></div>
+    <div class="practice-modal-heading"><span class="practice-modal-category">${esc(p.tag || p.mode)}</span><h2 id="practice-title">${esc(p.name)}</h2><p>${esc(p.description)}</p></div>
+    <div class="practice-stage practice-stage-v2"><div class="practice-visual-universe"><div class="practice-halo halo-1"></div><div class="practice-halo halo-2"></div><div class="practice-halo halo-3"></div><div class="practice-halo halo-4"></div><div id="active-breath-orb" class="active-breath-orb" data-phase="rest"><span class="orb-liquid-cloud cloud-a" aria-hidden="true"></span><span class="orb-liquid-cloud cloud-b" aria-hidden="true"></span><span class="orb-inner-ribbon ribbon-a"></span><span class="orb-inner-ribbon ribbon-b"></span><i></i></div><canvas id="practice-particle-canvas" class="breath-particle-canvas practice-particle-canvas" data-breath-canvas data-phase="rest" data-phase-duration="4" aria-hidden="true"></canvas></div><div class="practice-stage-caption"><span id="breath-phase" aria-live="polite" aria-atomic="true">${phaseName}</span><small id="breath-instruction" aria-live="polite" aria-atomic="true">${esc(p.guidance || 'Найди удобное положение и дыши комфортно.')}</small></div></div>
+    <div class="practice-detail practice-detail-v2"><div class="practice-pattern-pills"><span>${icon('wind',13)} ${esc(p.label)}</span><span data-practice-duration-label>${icon('clock',13)} ${Math.round(p.duration/60)} мин</span><span>${esc(p.mode)}</span></div><div class="practice-duration-slot"><label class="practice-duration-field" aria-hidden="${started}" ${started?'inert':''}><span>Продолжительность</span><select data-field="practice.duration" aria-label="Продолжительность практики" ${started?'disabled':''}>${[1,3,5,10].map(minutes=>`<option value="${minutes}" ${Math.round(p.duration/60)===minutes?'selected':''}>${minutes} ${plural(minutes,['минута','минуты','минут'])}</option>`).join('')}</select></label><div class="practice-session-meta" aria-hidden="${!started}"><span>${icon('clock',14)} Сессия ${Math.round(p.duration/60)} мин</span><span>${state.practiceSettings.vibration?icon('activity',14)+' Вибрация включена':''}</span></div></div><div class="practice-timer" id="practice-timer" aria-live="off">${formatDuration(started?Math.max(0,p.duration-practiceElapsedBeforePause):p.duration)}</div><div class="practice-track"><span id="practice-track-fill" style="width:0%"></span></div><div class="practice-controls"><button type="button" class="button button-lime" id="practice-toggle" data-action="practice-toggle">${icon(running?'pause':'play',17)} ${running?'Пауза':started?'Продолжить':'Начать практику'}</button><button type="button" class="button button-dark-outline" data-action="practice-stop">${started?'Завершить':'Закрыть'}</button></div><p class="practice-footnote">Дыши без усилия. Задержки необязательны. Если появятся головокружение, нехватка воздуха или дискомфорт, остановись и вернись к обычному дыханию.</p><div class="practice-source-card"><span>${icon('book-open',15)}</span><div><strong>Источник и адаптация</strong><p>${esc(p.sourceNote || 'Практика — вспомогательный способ поддержать спокойствие и внимание.')}</p><a href="${esc(p.sourceUrl || 'https://www.nhs.uk/mental-health/self-help/guides-tools-and-activities/breathing-exercises-for-stress/')}" target="_blank" rel="noopener noreferrer">${esc(p.sourceTitle || 'NHS — дыхательные упражнения при стрессе')} ${icon('arrow-up-right',13)}</a></div></div></div>
+  </section></div>`;
 }
 
 function renderPracticeResultOverlay() {
   const session = state.practiceSessions.find(item => item.sessionKey === practiceResultSessionKey);
   const practice = PRACTICES.find(item => item.id === session?.id);
-  return `<div class="modal-backdrop dark-backdrop"><section class="practice-result-modal" role="dialog" aria-modal="true" aria-labelledby="practice-result-title"><div class="practice-result-orb">${icon('check',26)}</div><p class="dark-kicker">ПАУЗА ЗАВЕРШЕНА</p><h2 id="practice-result-title">Спасибо, что уделил(а) время себе.</h2><p>${esc(practice?.name || 'Практика')} · ${Math.round((session?.duration || 0)/60)} мин. Если тебе подходит, отметь, как ощущается момент сейчас. Это необязательно.</p><div class="practice-result-fields">${ratingScale('practice-feedback','afterRating',practiceResultDraft.afterRating,'Насколько сильна тяга сейчас?')}<div class="dark-field-group"><span>Как ты себя чувствуешь?</span>${choiceChips('practice-feedback','mood',EMOTION_OPTIONS,practiceResultDraft.mood)}</div><label class="form-field dark-form-field"><span>Заметка <small>необязательно</small></span><textarea rows="2" maxlength="500" data-field="practice.feedback.note" placeholder="Что хотелось бы запомнить?">${esc(practiceResultDraft.note)}</textarea></label></div><button type="button" class="button button-lime full-button" data-action="save-practice-feedback">Сохранить наблюдение</button><button type="button" class="craving-secondary-action" data-action="skip-practice-feedback">Пропустить и продолжить</button><p class="practice-footnote">Оценка отражает только твои ощущения и сама по себе не доказывает эффективность техники.</p></section></div>`;
+  return `<div class="modal-backdrop dark-backdrop"><section class="practice-result-modal" role="dialog" aria-modal="true" aria-labelledby="practice-result-title"><div class="practice-result-orb">${icon('check',26)}</div><h2 id="practice-result-title">Практика завершена</h2><p>${esc(practice?.name || 'Практика')} · ${Math.round((session?.duration || 0)/60)} мин. Если тебе подходит, отметь, как ощущается момент сейчас. Это необязательно.</p><div class="practice-result-fields">${ratingScale('practice-feedback','afterRating',practiceResultDraft.afterRating,'Насколько сильна тяга сейчас?')}<div class="dark-field-group"><span>Как ты себя чувствуешь?</span>${choiceChips('practice-feedback','mood',EMOTION_OPTIONS,practiceResultDraft.mood)}</div><label class="form-field dark-form-field"><span>Заметка <small>необязательно</small></span><textarea rows="2" maxlength="500" data-field="practice.feedback.note" placeholder="Что хотелось бы запомнить?">${esc(practiceResultDraft.note)}</textarea></label></div><button type="button" class="button button-lime full-button" data-action="save-practice-feedback">Сохранить наблюдение</button><button type="button" class="craving-secondary-action" data-action="skip-practice-feedback">Пропустить и продолжить</button><p class="practice-footnote">Оценка отражает только твои ощущения и сама по себе не доказывает эффективность техники.</p></section></div>`;
 }
 
 function choiceChips(action, field, options, selected, extra = '') {
@@ -571,7 +884,10 @@ function updateProfileField(field, value, date = null) {
   const previousState = state;
   state = cloneState();
   const [group, key, sub] = field.split('.');
-  if (group === 'day' && key === 'note' && date) {
+  if (group === 'profile') {
+    if (key === 'displayName') state.profile.displayName = String(value).replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 48);
+    else if (key === 'personalReason') state.profile.personalReason = String(value).replace(/\u0000/g, '').slice(0, 240);
+  } else if (group === 'day' && key === 'note' && date) {
     if (!state.dailyLogs[date]) state.dailyLogs[date] = { amount: 0, unit: state.tracking.unit, hourly: Array(24).fill(0), note: '', mood: null, triggers: [], measurements: {} };
     state.dailyLogs[date].note = String(value).slice(0, 4000);
     return commitMutation(previousState);
@@ -635,6 +951,7 @@ function updateProfileField(field, value, date = null) {
       }
     } else if (key === 'reminderTime' && sub != null) state.preferences.reminderTimes[Number(sub)] = value;
     else if (key === 'sound') state.preferences.sound = value === true;
+    else if (key === 'theme') state.preferences.theme = ['light', 'dark', 'system'].includes(value) ? value : 'light';
   } else if (group === 'practiceSettings' && key === 'vibration') {
     state.practiceSettings.vibration = value === true;
   }
@@ -724,10 +1041,25 @@ function openDay(date) {
 
 function renderOverlayOnly() {
   const host = $('#overlay-root');
-  if (host) host.innerHTML = renderOverlay();
-  if (overlay?.type === 'practice') { lastPracticePhase = null; setPracticePhase(currentPracticeSeconds()); }
+  if (!host) return;
+  const nextKey = overlayKey();
+  const markup = renderOverlay();
+  if (nextKey !== lastOverlayKey) host.innerHTML = markup;
+  else morphChildren(host, htmlFragment(markup));
+  lastOverlayKey = nextKey;
+  if (overlay?.type === 'practice') {
+    if (practiceTimer || practicePaused || practiceElapsedBeforePause > 0) setPracticePhase(currentPracticeSeconds());
+    else {
+      const phase = $('#breath-phase'); if (phase) phase.textContent = 'Найди комфортный ритм';
+      const instruction = $('#breath-instruction'); if (instruction && activePractice) instruction.textContent = activePractice.guidance || 'Дыши комфортно; счёт можно пропустить.';
+      const orb = $('#active-breath-orb'); if (orb) orb.dataset.phase = 'rest';
+      const canvas = $('#practice-particle-canvas'); if (canvas) { canvas.dataset.phase = 'rest'; breathVisualInstances.get(canvas)?.setPhase('rest'); }
+    }
+  }
   updateCountdownElements();
+  syncPracticeVisualState();
   if (overlay) focusDialog();
+  syncBreathVisuals();
 }
 
 function openPractice(id) {
@@ -749,10 +1081,10 @@ function openPractice(id) {
 function setPracticePhase(elapsedSeconds) {
   if (!activePractice) return;
   const phaseNodes = [
-    { name: 'Вдох', instruction: 'Мягко вдохни носом', duration: activePractice.inhale, phase: 'inhale' },
-    ...(activePractice.hold ? [{ name: 'Пауза', instruction: 'Оставайся в комфорте', duration: activePractice.hold, phase: 'hold' }] : []),
-    { name: 'Выдох', instruction: 'Спокойно выдохни', duration: activePractice.exhale, phase: 'exhale' },
-    ...(activePractice.pause ? [{ name: 'Пауза', instruction: 'Не задерживай дыхание через силу', duration: activePractice.pause, phase: 'hold' }] : []),
+    { name: 'Вдох', instruction: activePractice.inhaleCue || 'Мягко вдохни носом', duration: activePractice.inhale, phase: 'inhale' },
+    ...(activePractice.hold ? [{ name: 'Пауза', instruction: activePractice.holdCue || 'Оставайся в комфорте', duration: activePractice.hold, phase: 'hold' }] : []),
+    { name: 'Выдох', instruction: activePractice.exhaleCue || 'Спокойно выдохни', duration: activePractice.exhale, phase: 'exhale' },
+    ...(activePractice.pause ? [{ name: 'Пауза', instruction: activePractice.holdCue || 'Не задерживай дыхание через силу', duration: activePractice.pause, phase: 'hold' }] : []),
   ];
   const cycle = phaseNodes.reduce((sum, row) => sum + row.duration, 0) || 1;
   let phasePosition = elapsedSeconds % cycle;
@@ -778,6 +1110,8 @@ function setPracticePhase(elapsedSeconds) {
   if (name) name.textContent = phase.name;
   if (instruction) instruction.textContent = phase.instruction;
   if (orb) orb.dataset.phase = phase.phase;
+  const particleCanvas = $('#practice-particle-canvas');
+  if (particleCanvas) { particleCanvas.dataset.phase = phase.phase; particleCanvas.dataset.phaseDuration = String(Math.max(0.5, phase.duration)); breathVisualInstances.get(particleCanvas)?.setPhase(phase.phase, Math.max(0.5, phase.duration)); }
 }
 
 
@@ -805,6 +1139,32 @@ function currentPracticeSeconds() {
   return practiceElapsedBeforePause + (practiceStartedAt ? Math.floor((Date.now() - practiceStartedAt) / 1000) : 0);
 }
 
+function syncPracticeVisualState() {
+  const modal = $('.practice-modal-v2');
+  if (!modal) return;
+  const visualState = practiceTimer && !practicePaused ? 'running' : practicePaused ? 'paused' : 'ready';
+  const started = visualState !== 'ready';
+  modal.dataset.sessionState = visualState;
+  modal.classList.toggle('is-session-running', visualState === 'running');
+  modal.classList.toggle('is-session-paused', visualState === 'paused');
+  modal.classList.toggle('is-session-ready', visualState === 'ready');
+
+  // Keep duration selection available only before a session starts. Hiding it by
+  // collapsing the control (rather than replacing the modal) avoids layout jumps
+  // around the visualizer and keeps the Canvas animation instance alive.
+  const durationField = $('.practice-duration-field', modal);
+  const durationSelect = $('select[data-field="practice.duration"]', modal);
+  const sessionMeta = $('.practice-session-meta', modal);
+  if (durationField) {
+    durationField.setAttribute('aria-hidden', String(started));
+    durationField.inert = started;
+  }
+  if (durationSelect) durationSelect.disabled = started;
+  if (sessionMeta) sessionMeta.setAttribute('aria-hidden', String(!started));
+  const durationLabel = $('[data-practice-duration-label]', modal);
+  if (durationLabel && activePractice) durationLabel.innerHTML = `${icon('clock', 13)} ${Math.round(activePractice.duration / 60)} мин`;
+}
+
 function togglePractice() {
   if (!activePractice) return;
   if (practiceTimer && !practicePaused) {
@@ -815,6 +1175,8 @@ function togglePractice() {
     const btn = $('#practice-toggle'); if (btn) btn.innerHTML = `${icon('play', 17)} Продолжить`;
     const phase = $('#breath-phase'); if (phase) phase.textContent = 'Пауза';
     const instruction = $('#breath-instruction'); if (instruction) instruction.textContent = 'Продолжи, когда будешь готов(а)';
+    breathVisualInstances.get($('#practice-particle-canvas'))?.pause();
+    syncPracticeVisualState();
     return;
   }
   if (practiceElapsedBeforePause >= activePractice.duration) practiceElapsedBeforePause = 0;
@@ -822,6 +1184,8 @@ function togglePractice() {
   practiceStartedAt = Date.now();
   const btn = $('#practice-toggle'); if (btn) btn.innerHTML = `${icon('pause', 17)} Пауза`;
   practiceTimer = setInterval(tickPractice, 250);
+  breathVisualInstances.get($('#practice-particle-canvas'))?.resume();
+  syncPracticeVisualState();
   tickPractice();
 }
 
@@ -1045,25 +1409,64 @@ function setFieldValue(path, value, date) {
     showToast('Не удалось сохранить изменения. Текущие данные восстановлены. Проверь доступное место в хранилище.');
     return;
   }
-  if (path === 'plan.strategy' || path === 'tracking.unit' || path === 'preferences.remindersEnabled' || path === 'plan.startDate' || path === 'preferences.sound' || path === 'practiceSettings.vibration') render();
+  if (path === 'plan.strategy' || path === 'tracking.unit' || path === 'preferences.remindersEnabled' || path === 'plan.startDate' || path === 'preferences.sound' || path === 'preferences.theme' || path === 'practiceSettings.vibration' || path.startsWith('profile.')) render();
   else showToast('Сохранено');
 }
 
 root.addEventListener('click', event => {
+  if (healthMenuOpen && !event.target.closest('#health-nav-menu') && !event.target.closest('[data-action="toggle-health-menu"]')) {
+    healthMenuOpen = false;
+    syncNavigation();
+  }
   const tabButton = event.target.closest('[data-tab]');
   if (tabButton) {
     event.preventDefault();
-    activeTab = tabButton.dataset.tab;
-    if (!['today', 'calendar', 'practices', 'tips', 'profile'].includes(activeTab)) activeTab = 'today';
-    overlay = null; render(); $('#main-content')?.focus({ preventScroll: true }); return;
+    const requestedTab = tabButton.dataset.tab;
+    const allowedTabs = ['today', 'calendar', 'practices', 'tips', 'profile', 'health'];
+    if (!allowedTabs.includes(requestedTab)) return;
+    healthMenuOpen = false;
+    const returningToProfile = requestedTab === 'profile' && profileSubpage !== 'main';
+    if (requestedTab === 'profile') profileSubpage = 'main';
+    if (requestedTab !== activeTab || returningToProfile) {
+      activeTab = requestedTab;
+      overlay = null;
+      render();
+    } else {
+      scrollPageToTop();
+    }
+    $('#main-content')?.focus({ preventScroll: true });
+    return;
   }
   const button = event.target.closest('[data-action]');
   if (!button) return;
   const action = button.dataset.action;
+  if (action === 'toggle-health-menu') {
+    healthMenuOpen = !healthMenuOpen;
+    syncNavigation();
+    return;
+  }
+  if (action === 'select-health-section') {
+    const requestedTab = button.dataset.section;
+    if (!['health', 'practices'].includes(requestedTab)) return;
+    healthMenuOpen = false;
+    if (requestedTab !== activeTab) {
+      activeTab = requestedTab;
+      overlay = null;
+      render();
+    } else {
+      syncNavigation();
+      scrollPageToTop();
+    }
+    $('#main-content')?.focus({ preventScroll: true });
+    return;
+  }
   if (['open-day', 'open-practice', 'open-craving', 'quick-practice', 'open-support', 'open-slip', 'open-weekly-review', 'reset-data', 'import-data'].includes(action)) overlayTrigger = button;
   if (button.classList.contains('modal-backdrop') && action === 'backdrop-close') { if (event.target === button && overlay?.type !== 'onboarding') closeOverlay(); return; }
   switch (action) {
-    case 'go-profile': activeTab = 'profile'; overlay = null; render(); break;
+    case 'go-profile': { const changed = activeTab !== 'profile' || profileSubpage !== 'main'; activeTab = 'profile'; profileSubpage = 'main'; overlay = null; healthMenuOpen = false; render(); if (!changed) scrollPageToTop(); break; }
+    case 'open-profile-settings': profileSubpage = 'settings'; render(); scrollPageToTop(); break;
+    case 'back-profile-settings': profileSubpage = 'main'; render(); scrollPageToTop(); break;
+    case 'go-health': { if (overlay?.type === 'day' && overlay.date <= today()) healthCheckinDate = overlay.date; const changed = activeTab !== 'health'; activeTab = 'health'; overlay = null; healthMenuOpen = false; render(); if (!changed) scrollPageToTop(); break; }
     case 'dismiss-hint': { const previousState = state; state = cloneState(); state.ui.showStarterHint = false; if (!commitMutation(previousState, { renderMode: 'screen' })) break; render(); break; }
     case 'open-craving': openCraving(); break;
     case 'quick-practice': openPractice('natural'); break;
@@ -1079,9 +1482,9 @@ root.addEventListener('click', event => {
       const selected = new Set(state.dailyLogs[date].triggers || []);
       selected.has(id) ? selected.delete(id) : selected.add(id);
       state.dailyLogs[date].triggers = [...selected];
-      if (!commitMutation(previousState, { renderMode: 'overlay' })) break;
-      renderOverlayOnly();
-      $(`[data-action="toggle-trigger"][data-id="${id}"]`)?.focus({ preventScroll: true });
+      if (!commitMutation(previousState)) break;
+      if (overlay) renderOverlayOnly(); else render();
+      $(`[data-action="toggle-trigger"][data-date="${date}"][data-id="${id}"]`)?.focus({ preventScroll: true });
       break;
     }
     case 'set-day-mood': {
@@ -1090,8 +1493,9 @@ root.addEventListener('click', event => {
       const previousState = state; state = cloneState();
       if (!state.dailyLogs[date]) state.dailyLogs[date] = { amount: 0, unit: state.tracking.unit, hourly: Array(24).fill(0), note: '', mood: null, triggers: [], measurements: {} };
       state.dailyLogs[date].mood = state.dailyLogs[date].mood === mood ? null : mood;
-      if (!commitMutation(previousState, { renderMode: 'overlay' })) break;
-      renderOverlayOnly();
+      if (!commitMutation(previousState)) break;
+      if (overlay) renderOverlayOnly(); else render();
+      $(`[data-action="set-day-mood"][data-date="${date}"][data-id="${mood}"]`)?.focus({ preventScroll: true });
       break;
     }
     case 'craving-choice': {
@@ -1115,7 +1519,7 @@ root.addEventListener('click', event => {
       $(`[data-action="slip-choice"][data-field="${field}"][data-value="${value}"]`)?.focus({ preventScroll: true });
       break;
     }
-    case 'open-weekly-review': overlay = { type: 'weekly-review' }; renderOverlayOnly(); break;
+    case 'open-weekly-review': activeTab = 'health'; healthMenuOpen = false; overlay = { type: 'weekly-review' }; render(); scrollPageToTop(); break;
     case 'open-slip': { slipDraft = { ...freshSlipDraft(), trigger: state.dailyLogs[today()]?.triggers?.[0] || '', emotion: state.dailyLogs[today()]?.mood || '' }; overlay = { type: 'slip' }; renderOverlayOnly(); break; }
     case 'save-slip': saveSlipReview(); break;
     case 'adjust-amount': recordAmount(today(), Number(button.dataset.delta)); break;
@@ -1127,15 +1531,23 @@ root.addEventListener('click', event => {
     case 'month-prev': selectedCalendarMonth = new Date(selectedCalendarMonth.getFullYear(), selectedCalendarMonth.getMonth() - 1, 1); render(); break;
     case 'month-next': selectedCalendarMonth = new Date(selectedCalendarMonth.getFullYear(), selectedCalendarMonth.getMonth() + 1, 1); render(); break;
     case 'tip-category': tipCategory = button.dataset.id; render(); break;
+    case 'home-stats-range': {
+      const id = button.dataset.id;
+      if (!['today', 'week', 'month'].includes(id)) break;
+      homeStatsRange = id;
+      render();
+      break;
+    }
+    case 'next-home-tip': chooseNextHomeTip(); break;
     case 'reset-tip-filters': tipCategory = 'all'; tipLevel = 'all'; tipSituation = 'all'; tipSearch = ''; render(); break;
-    case 'open-guide': if (TIPS.some(item => item.id === button.dataset.id)) { overlay = { type: 'guide', id: button.dataset.id }; renderOverlayOnly(); } break;
+    case 'open-guide': if (TIPS.some(item => item.id === button.dataset.id)) { if (HEALTH_TIP_IDS.has(button.dataset.id)) activeTab = 'health'; healthMenuOpen = false; overlay = { type: 'guide', id: button.dataset.id }; render(); } break;
     case 'guide-action': {
       const tip = TIPS.find(item => item.id === button.dataset.id);
       if (!tip) break;
       overlay = null;
       if (['urge-wave', 'four-d'].includes(tip.id)) openCraving();
       else if (tip.id === 'trigger-map' || tip.id === 'small-environment') { activeTab = 'calendar'; render(); }
-      else if (['professional', 'treatment', 'withdrawal', 'support-network', 'vaping-support'].includes(tip.id)) { overlay = { type: 'support' }; renderOverlayOnly(); }
+      else if (['professional', 'treatment', 'withdrawal', 'support-network', 'vaping-support', 'who-quit-today'].includes(tip.id)) { activeTab = 'health'; overlay = { type: 'support' }; render(); }
       else if (tip.id === 'slip') { slipDraft = freshSlipDraft(); overlay = { type: 'slip' }; renderOverlayOnly(); }
       else if (tip.id === 'breathing') { activeTab = 'practices'; render(); }
       else if (tip.id === 'small-goals' || tip.id === 'make-easy') { activeTab = 'profile'; render(); }
@@ -1157,6 +1569,7 @@ root.addEventListener('click', event => {
       break;
     }
     case 'practice-favorites-filter': practiceFavoritesOnly = button.dataset.value === 'favorites'; render(); break;
+    case 'practice-category-filter': { const category = button.dataset.value; if (!PRACTICE_CATEGORIES.some(item => item.id === category)) break; practiceCategory = category; render(); break; }
     case 'toggle-practice-favorite': {
       const id = button.dataset.id;
       if (!PRACTICES.some(item => item.id === id)) break;
@@ -1253,6 +1666,13 @@ root.addEventListener('change', event => {
   const field = event.target.closest('[data-field]');
   if (!field) return;
   const value = field.type === 'checkbox' ? field.checked : field.value;
+  if (field.dataset.field === 'health.date') {
+    const date = String(value || '');
+    healthCheckinDate = /^\d{4}-\d{2}-\d{2}$/.test(date) && date <= today() ? date : today();
+    render();
+    return;
+  }
+  if (field.dataset.field === 'tips.category') { tipCategory = ['all', 'now', 'habits', 'plan', 'support'].includes(value) ? value : 'all'; render(); return; }
   if (field.dataset.field === 'tips.level') { tipLevel = TIP_LEVELS.some(item => item.id === value) ? value : 'all'; render(); return; }
   if (field.dataset.field === 'tips.situation') { tipSituation = TIP_SITUATIONS.some(item => item.id === value) ? value : 'all'; render(); return; }
   if (field.dataset.field === 'practice.duration') {
@@ -1331,6 +1751,12 @@ function focusDialog() {
 }
 
 document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && healthMenuOpen) {
+    healthMenuOpen = false;
+    syncNavigation();
+    $('[data-action="toggle-health-menu"]')?.focus({ preventScroll: true });
+    return;
+  }
   if (!overlay) return;
   if (event.key === 'Escape') {
     if (overlay.type !== 'onboarding') closeOverlay();
@@ -1356,8 +1782,15 @@ function updateCountdownElements() {
 
 // Local notifications can be evaluated only while this client is open; no server is required for core features.
 setInterval(checkReminders, 30000);
+homeTipTimer = setInterval(() => {
+  if (!document.hidden && activeTab === 'today' && !overlay) chooseNextHomeTip();
+}, 15000);
 
 render();
+const systemThemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
+const onSystemThemeChange = () => { if ((state.preferences.theme || 'light') === 'system') applyTheme(); };
+systemThemeQuery?.addEventListener?.('change', onSystemThemeChange);
+if (!systemThemeQuery?.addEventListener) systemThemeQuery?.addListener?.(onSystemThemeChange);
 if (!state.onboardingComplete && loaded.source === 'fresh') {
   overlay = { type: 'onboarding' };
   renderOverlayOnly();

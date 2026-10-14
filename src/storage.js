@@ -12,6 +12,7 @@ export function createDefaultState() {
   return {
     schemaVersion: 4,
     onboardingComplete: false,
+    profile: { displayName: '', personalReason: '', createdAt: todayISO() },
     plan: { strategy: 'quit', startDate: todayISO(), baseline: null, dailyTarget: 0 },
     tracking: { unit: 'puffs', unitLabel: 'затяжек' },
     dailyLogs: {},
@@ -20,7 +21,7 @@ export function createDefaultState() {
     practiceSessions: [],
     practiceSettings: { favorites: ['natural'], durations: {}, vibration: false },
     completedTasks: {},
-    preferences: { remindersEnabled: false, reminderTimes: ['11:00', '16:00', '21:00'], sound: false },
+    preferences: { remindersEnabled: false, reminderTimes: ['11:00', '16:00', '21:00'], sound: false, theme: 'light' },
     finance: { weeklySpend: null, currency: '€', goalName: '', goalAmount: null },
     achievements: { celebrated: [], urgeCount: 0 },
     lastUseAt: null,
@@ -39,6 +40,11 @@ function sanitizeCurrent(input) {
   const value = input && typeof input === 'object' ? input : {};
   const safe = { ...base, ...value, schemaVersion: 4 };
   safe.onboardingComplete = value.onboardingComplete === true;
+  const profileInput = value.profile && typeof value.profile === 'object' && !Array.isArray(value.profile) ? value.profile : {};
+  safe.profile = { ...base.profile, ...profileInput };
+  safe.profile.displayName = typeof profileInput.displayName === 'string' ? profileInput.displayName.replace(/[\u0000-\u001f<>]/g, '').trim().slice(0, 48) : '';
+  safe.profile.personalReason = typeof profileInput.personalReason === 'string' ? profileInput.personalReason.replace(/\u0000/g, '').slice(0, 240) : '';
+  safe.profile.createdAt = validDate(profileInput.createdAt) ? profileInput.createdAt : base.profile.createdAt;
   safe.plan = { ...base.plan, ...(value.plan || {}) };
   safe.tracking = { ...base.tracking, ...(value.tracking || {}) };
   safe.tracking.unitLabel = typeof safe.tracking.unitLabel === 'string' ? safe.tracking.unitLabel.replace(/[<>\u0026\"'`]/g, '').trim().slice(0, 24) || 'единиц' : 'единиц';
@@ -56,8 +62,9 @@ function sanitizeCurrent(input) {
   if (!safe.preferences.reminderTimes.length) safe.preferences.reminderTimes = base.preferences.reminderTimes.slice();
   safe.preferences.remindersEnabled = safe.preferences.remindersEnabled === true;
   safe.preferences.sound = safe.preferences.sound === true;
+  safe.preferences.theme = ['light', 'dark', 'system'].includes(safe.preferences.theme) ? safe.preferences.theme : 'light';
   safe.practiceSettings = { ...base.practiceSettings, ...(value.practiceSettings || {}) };
-  const validPracticeIds = new Set(['calm-46', 'box', 'natural', 'slow-35', 'switching']);
+  const validPracticeIds = new Set(['calm-46', 'box', 'natural', 'slow-35', 'switching', 'diaphragmatic', 'craving-breath', 'equal-55', 'anchor-breath', 'body-scan']);
   safe.practiceSettings.favorites = Array.isArray(safe.practiceSettings.favorites) ? [...new Set(safe.practiceSettings.favorites.filter(id => validPracticeIds.has(id)))].slice(0, 20) : base.practiceSettings.favorites.slice();
   const durations = safe.practiceSettings.durations && typeof safe.practiceSettings.durations === 'object' && !Array.isArray(safe.practiceSettings.durations) ? safe.practiceSettings.durations : {};
   safe.practiceSettings.durations = {};

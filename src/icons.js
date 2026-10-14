@@ -18,6 +18,7 @@ const paths = {
   rotate: '<path d="M20 7v5h-5M4 17v-5h5"/><path d="M5.5 9A7 7 0 0 1 18 6.5L20 12M4 12l2 5.5A7 7 0 0 0 18.5 15"/>',
   heart: '<path d="M20.8 8.6c0 5.2-8.8 10.1-8.8 10.1S3.2 13.8 3.2 8.6A4.7 4.7 0 0 1 12 6a4.7 4.7 0 0 1 8.8 2.6Z"/>',
   moon: '<path d="M20.4 15.1A8.5 8.5 0 0 1 8.9 3.6 8.7 8.7 0 1 0 20.4 15.1Z"/>',
+  palette: '<path d="M12 3a9 9 0 1 0 0 18h1.1a2 2 0 0 0 1.4-3.4 1.7 1.7 0 0 1 1.2-2.9H17a4 4 0 0 0 4-4c0-4.3-4-7.7-9-7.7Z"/><circle cx="7.5" cy="11" r=".9"/><circle cx="10" cy="7.5" r=".9"/><circle cx="14" cy="7.8" r=".9"/>',
   sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4m11.4 11.4 1.4 1.4M2 12h2m16 0h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
   circle: '<circle cx="12" cy="12" r="8.5"/><circle cx="12" cy="12" r="3"/>',
   target: '<circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="5"/><circle cx="12" cy="12" r="1"/>',
@@ -40,8 +41,21 @@ const paths = {
   link: '<path d="M10 13a5 5 0 0 0 7.1 0l2.1-2.1a5 5 0 0 0-7.1-7.1L10.9 5"/><path d="M14 11a5 5 0 0 0-7.1 0l-2.1 2.1a5 5 0 0 0 7.1 7.1l1.2-1.2"/>',
   external: '<path d="M14 4h6v6M20 4l-9 9"/><path d="M18 13v6a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V7a1 1 0 0 1 1-1h6"/>',
   bookOpen: '<path d="M3 5.5A3.5 3.5 0 0 1 6.5 2H21v17H6.5A3.5 3.5 0 0 0 3 22z"/><path d="M3 5.5v13A3.5 3.5 0 0 1 6.5 15H21M8 6h8m-8 3h6"/>' ,
+  heartPulse: '<path d="M20.8 8.6c0 5.2-8.8 10.1-8.8 10.1S3.2 13.8 3.2 8.6A4.7 4.7 0 0 1 12 6a4.7 4.7 0 0 1 8.8 2.6Z"/><path d="M4 12h3l2-3 3 6 2-3h6"/>' ,
+  messageCircle: '<path d="M20 11.5a7.5 7.5 0 0 1-7.5 7.5 8 8 0 0 1-3.5-.8L4 20l1.4-4.2A7.5 7.5 0 1 1 20 11.5Z"/><path d="M8 11h.01M12 11h.01M16 11h.01"/>' ,
+  calendarCheck: '<rect x="3.5" y="5" width="17" height="16" rx="3"/><path d="M7.5 3v4M16.5 3v4M3.5 10h17m-11 5 2 2 4-4"/>' ,
+  shieldCheck: '<path d="M12 3 20 6v5c0 5-3.5 8-8 10-4.5-2-8-5-8-10V6z"/><path d="m8.5 12 2.2 2.2 4.8-5"/>' ,
+  heartHandshake: '<path d="M20.8 8.6c0 5.2-8.8 10.1-8.8 10.1S3.2 13.8 3.2 8.6A4.7 4.7 0 0 1 12 6a4.7 4.7 0 0 1 8.8 2.6Z"/><path d="m8 12 2-1.5 2 1.5 2-1.5 2 1.5m-8 2 2 1m4-1-2 1"/>' ,
+  lightbulb: '<path d="M9 18h6M10 21h4M8.5 14.5A6 6 0 1 1 15.5 14.5c-1 .8-1.5 1.8-1.5 3h-4c0-1.2-.5-2.2-1.5-3Z"/><path d="M12 2v1m8 8h1M3 11H2m15.7-5.7.7-.7M6.3 5.3l-.7-.7"/>' ,
+  arrowUpRight: '<path d="M7 17 17 7M7 7h10v10"/>' ,
+  undo2: '<path d="M9 14 4 9l5-5"/><path d="M4 9h9a7 7 0 0 1 0 14" transform="translate(0 -2)"/>' ,
+  bookmark: '<path d="M6 4.5A1.5 1.5 0 0 1 7.5 3h9A1.5 1.5 0 0 1 18 4.5V21l-6-4-6 4z"/>' ,
+  chartCombined: '<path d="M3 3v18h18"/><path d="m7 14 4-4 3 3 6-7"/><path d="M14 6h6v6"/>'
+
 };
 
 export function icon(name, size = 20, extraClass = '') {
-  return `<svg class="icon ${extraClass}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.sparkles}</svg>`;
+  const aliases = { 'user-round': 'user', 'heart-pulse': 'heartPulse', 'message-circle': 'messageCircle', 'calendar-check': 'calendarCheck', 'shield-check': 'shieldCheck', 'heart-handshake': 'heartHandshake', 'lightbulb': 'lightbulb', 'arrow-up-right': 'arrowUpRight', 'undo-2': 'undo2', 'chart-no-axes-combined': 'chartCombined', 'book-open': 'bookOpen' };
+  name = aliases[name] || name;
+  return `<svg class="icon ${extraClass}" width="${size}" height="${size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${paths[name] || paths.info}</svg>`;
 }

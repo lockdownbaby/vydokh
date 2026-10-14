@@ -1,15 +1,19 @@
-const CACHE = 'vydokh-redesign-1.2.0';
+const CACHE = 'vydokh-redesign-2.0.1';
 const APP_PREFIX = 'vydokh-redesign-';
 const ASSETS = [
   './',
   './index.html',
   './manifest.webmanifest',
   './favicon.svg',
+  './brand-mark.svg',
+  './brand-app-icon.svg',
+  './brand-lockup.svg',
   './icon-180.png',
   './icon-192.png',
   './icon-512.png',
   './icon-maskable-512.png',
   './src/app.js',
+  './src/breath-visual.js',
   './src/content.js',
   './src/domain.js',
   './src/icons.js',

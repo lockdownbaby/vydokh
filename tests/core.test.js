@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { createDefaultState, migrateLegacyState, importBundle, loadState, saveState, STORAGE_KEY, PREVIOUS_KEY, OLDER_KEY } from '../src/storage.js';
+import { createDefaultState, migrateLegacyState, importBundle, exportBundle, loadState, saveState, STORAGE_KEY, PREVIOUS_KEY, OLDER_KEY } from '../src/storage.js';
 import { getLog, getStatus, getCleanDays, getWeeklyStats, getSavings, getStreak, getBestStreak, addDays, dateISO, getWeekStartISO, getWeeklyReviewMetrics, hasReportedUseOnDate, getProgressAnalytics, getPracticeAnalytics } from '../src/domain.js';
 
 test('legacy v1 migration preserves date, note, count, hourly history and finances', () => {
@@ -438,4 +438,26 @@ test('quit-mode savings do not resume on unknown days after a reported use episo
   assert.equal(getSavings(state, new Date(`${today}T18:00:00`)), null, 'no comparable day remains for a savings estimate');
   state.dailyLogs[today] = { amount: 4, unit: state.tracking.unit, hourly: Array(24).fill(0), note: '', triggers: [], measurements: { [state.tracking.unit]: { amount: 4, hourly: Array(24).fill(0) } } };
   assert.equal(getSavings(state, new Date(`${today}T18:00:00`)), 0, 'a quantified use day can be calculated using recorded data');
+});
+
+
+test('local profile has safe defaults, survives backup restore and sanitizes user-entered fields', () => {
+  const defaults = createDefaultState();
+  assert.deepEqual(defaults.profile.displayName, '');
+  assert.deepEqual(defaults.profile.personalReason, '');
+  const malicious = importBundle({ state: {
+    ...defaults,
+    profile: {
+      displayName: '  <script>alert(1)</script>Ира\u0000 ',
+      personalReason: 'Хочу больше свободы'.repeat(20),
+      createdAt: '2026-10-14',
+    },
+  } });
+  assert.equal(malicious.profile.displayName.includes('<'), false);
+  assert.ok(malicious.profile.displayName.length <= 48);
+  assert.ok(malicious.profile.personalReason.length <= 240);
+  assert.equal(malicious.profile.createdAt, '2026-10-14');
+  const restored = importBundle(exportBundle(malicious));
+  assert.equal(restored.profile.displayName, malicious.profile.displayName);
+  assert.equal(restored.profile.personalReason, malicious.profile.personalReason);
 });
