@@ -1,43 +1,20 @@
 {
   "id": "./",
-  "name": "Выдох — сила в твоём дыхании",
+  "name": "Выдох — твой путь, твой ритм",
   "short_name": "Выдох",
-  "description": "Выдох — спокойная поддержка на пути к отказу от никотина с персональным прогрессом, дыхательными практиками и фирменной светлой и тёмной темой.",
+  "description": "Персональная поддержка на пути к отказу от никотина: прогресс, плавные дыхательные практики, расширенная библиотека советов и локальный профиль без аккаунта.",
   "lang": "ru",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
   "orientation": "portrait",
   "background_color": "#f4f6f0",
-  "theme_color": "#f4f6f0",
-  "categories": [
-    "health",
-    "lifestyle"
-  ],
+  "theme_color": "#0b2d25",
+  "categories": ["health", "lifestyle"],
   "icons": [
-    {
-      "src": "icon-180.png",
-      "sizes": "180x180",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "icon-192.png",
-      "sizes": "192x192",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "icon-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "any"
-    },
-    {
-      "src": "icon-maskable-512.png",
-      "sizes": "512x512",
-      "type": "image/png",
-      "purpose": "maskable"
-    }
+    { "src": "icon-180.png", "sizes": "180x180", "type": "image/png", "purpose": "any" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

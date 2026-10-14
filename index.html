@@ -3,26 +3,14 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <meta name="theme-color" content="#f4f6f0">
+  <meta name="theme-color" content="#0b2d25">
   <meta name="description" content="Выдох — спокойная поддержка на пути к отказу от никотина. Персональный прогресс, дыхательные практики и привычки без давления.">
-  <meta name="color-scheme" content="light dark">
-  <script>
-    try {
-      const savedThemeState = JSON.parse(localStorage.getItem('vydokh.v4') || 'null');
-      const savedTheme = savedThemeState?.preferences?.theme || 'light';
-      const startupTheme = savedTheme === 'dark' || (savedTheme === 'system' && matchMedia('(prefers-color-scheme: dark)').matches) ? 'dark' : 'light';
-      document.documentElement.dataset.theme = startupTheme;
-      document.documentElement.style.colorScheme = startupTheme;
-      document.querySelector('meta[name="theme-color"]')?.setAttribute('content', startupTheme === 'dark' ? '#071714' : '#f4f6f0');
-    } catch (_) { /* default to the light theme if browser storage is unavailable */ }
-  </script>
+  <meta name="color-scheme" content="light">
   <link rel="icon" href="./favicon.svg" type="image/svg+xml">
-  <link rel="icon" href="./icon-192.png" type="image/png" sizes="192x192">
-  <meta name="apple-mobile-web-app-title" content="Выдох">
   <link rel="apple-touch-icon" href="./icon-180.png">
   <link rel="manifest" href="./manifest.webmanifest">
   <link rel="stylesheet" href="./src/styles.css">
-  <title>Выдох — сила в твоём дыхании</title>
+  <title>Выдох — твой путь, твой ритм</title>
 </head>
 <body>
   <div id="app" class="app-root"></div>

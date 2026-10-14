@@ -10,16 +10,6 @@ const esc = value => String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp
 const root = $('#app');
 const today = () => dateISO();
 
-function applyTheme() {
-  const preference = state?.preferences?.theme || 'light';
-  const systemDark = window.matchMedia?.('(prefers-color-scheme: dark)').matches === true;
-  const resolved = preference === 'system' ? (systemDark ? 'dark' : 'light') : preference;
-  document.documentElement.dataset.theme = resolved;
-  document.documentElement.style.colorScheme = resolved;
-  const themeColor = resolved === 'dark' ? '#071714' : '#f4f6f0';
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', themeColor);
-}
-
 const loaded = loadState();
 let state = loaded.state;
 if (loaded.migrated) {
@@ -331,8 +321,8 @@ function renderShell(content, { screenChanged = false } = {}) {
     <div class="app-frame">
       <header class="topbar">
         <a href="#today" class="brand" data-tab="today" aria-label="Выдох — на главную">
-          <span class="brand-symbol"><img src="./brand-mark.svg" alt=""></span>
-          <span class="brand-word">ВЫДОХ</span>
+          <span class="brand-symbol"><span></span></span>
+          <span class="brand-word">выдох<span>.</span></span>
         </a>
         <div class="topbar-right">
           <span class="privacy-pill">${icon('lock', 13)} Данные на устройстве</span>
@@ -360,7 +350,6 @@ function renderShell(content, { screenChanged = false } = {}) {
 }
 
 function render() {
-  applyTheme();
   const screens = {
     today: renderToday,
     calendar: renderCalendar,
@@ -733,11 +722,6 @@ function renderProfileSettings() {
   const installed = window.matchMedia?.('(display-mode: standalone)').matches || window.navigator.standalone === true;
   return `
     <section class="page-heading settings-page-heading"><div><button class="profile-back-link" type="button" data-action="back-profile-settings">${icon('chevron', 14)} Профиль</button><h1>Настройки</h1><p class="page-subtitle">Стратегия, учёт и параметры приложения.</p></div><span class="heading-icon">${icon('settings', 21)}</span></section>
-    <section class="settings-section appearance-settings"><div class="settings-heading"><span class="settings-heading-icon">${icon('palette', 19)}</span><div><h2>Внешний вид</h2><p>Выбери оформление, комфортное для тебя.</p></div></div><div class="form-card">
-      <label class="form-field"><span>Тема приложения</span><select data-field="preferences.theme"><option value="light" ${prefs.theme === 'light' ? 'selected' : ''}>Светлая</option><option value="dark" ${prefs.theme === 'dark' ? 'selected' : ''}>Тёмная</option><option value="system" ${prefs.theme === 'system' ? 'selected' : ''}>Как в системе</option></select></label>
-      <div class="theme-preview-row"><div class="theme-preview light-preview"><span></span><i></i><b></b><small>Светлая</small></div><div class="theme-preview dark-preview"><span></span><i></i><b></b><small>Тёмная</small></div></div>
-      <p class="field-help">Выбор сохраняется на этом устройстве. В режиме «Как в системе» тема будет следовать настройке оформления устройства.</p>
-    </div></section>
     <section class="settings-section"><div class="settings-heading"><span class="settings-heading-icon">${icon('target', 19)}</span><div><h2>Стратегия и цель</h2><p>Можно переключить в любой момент.</p></div></div><div class="form-card">
       <label class="form-field"><span>Мой подход</span><select data-field="plan.strategy"><option value="quit" ${p.strategy === 'quit' ? 'selected' : ''}>Полный отказ</option><option value="reduce" ${p.strategy === 'reduce' ? 'selected' : ''}>Постепенное сокращение</option></select></label>
       <label class="form-field"><span>Дата начала</span><input type="date" data-field="plan.startDate" value="${esc(p.startDate)}" max="${today()}"></label>
@@ -771,7 +755,7 @@ function renderProfileSettings() {
       <button class="data-action" type="button" data-action="import-data"><span>${icon('upload', 19)}</span><strong>Восстановить из файла</strong>${icon('chevron', 17)}</button>
       <div class="data-privacy-note">${icon('lock', 15)} Данные хранятся в браузере на этом устройстве. При очистке данных сайта они могут быть удалены. Сделай резервную копию перед сменой телефона.</div>
     </div></section>
-    <section class="about-card"><span class="about-mark"><img src="./brand-mark.svg" alt=""></span><div><h2>ВЫДОХ <span>v2.0.1</span></h2><p>Сила в твоём дыхании</p><small>${installed ? 'Приложение установлено' : 'Веб-версия · можно установить из браузера'}</small></div></section>
+    <section class="about-card"><span class="about-mark">${icon('leaf', 22)}</span><div><h2>Выдох <span>v1.8.1</span></h2><small>${installed ? 'Приложение установлено' : 'Веб-версия · можно установить из браузера'}</small></div></section>
     <div class="danger-zone"><button type="button" class="text-action danger-text" data-action="reset-data">Сбросить данные приложения</button></div>
   `;
 }
@@ -793,7 +777,7 @@ function renderOverlay() {
 }
 
 function renderOnboardingOverlay() {
-  return `<div class="modal-backdrop onboarding-backdrop" data-action="backdrop-close"><section class="modal onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title"><div class="onboarding-art"><div class="onboarding-orb orb-one"></div><div class="onboarding-orb orb-two"></div><div class="onboarding-logo"><img src="./brand-mark.svg" alt=""></div></div><p class="eyebrow">ДОБРО ПОЖАЛОВАТЬ В «ВЫДОХ»</p><h2 id="onboarding-title">Твой путь.<br><em>Твой собственный ритм.</em></h2><p class="modal-lead">Подстроим поддержку под твою цель. Это займёт меньше минуты — настройки можно изменить позже.</p><form id="onboarding-form" class="onboarding-form"><label class="form-field"><span>С чего хочешь начать?</span><select name="strategy" id="onboard-strategy"><option value="quit" ${state.plan.strategy === 'quit' ? 'selected' : ''}>Полный отказ от никотина</option><option value="reduce" ${state.plan.strategy === 'reduce' ? 'selected' : ''}>Постепенное сокращение</option></select></label><label class="form-field"><span>Дата начала</span><input type="date" name="startDate" value="${esc(state.plan.startDate)}" max="${today()}" required></label><div class="form-field"><span>Что удобно отслеживать?</span><select name="unit"><option value="puffs">Затяжки</option><option value="sessions">Сеансы использования</option><option value="pods">Картриджи / устройства</option><option value="custom">Свой показатель</option></select></div><label class="form-field" id="onboard-target-field"><span>Цель на день <small>можно задать позже</small></span><input type="number" name="target" min="0" max="99999" placeholder="Не задана"></label><button type="submit" class="button button-primary full-button">Начать свой путь ${icon('arrow', 16)}</button></form><p class="onboarding-privacy">${icon('lock', 13)} Без аккаунта. Твои данные остаются на устройстве.</p><button type="button" class="onboarding-skip" data-action="onboarding-skip">Настроить позже</button></section></div>`;
+  return `<div class="modal-backdrop onboarding-backdrop" data-action="backdrop-close"><section class="modal onboarding-modal" role="dialog" aria-modal="true" aria-labelledby="onboarding-title"><div class="onboarding-art"><div class="onboarding-orb orb-one"></div><div class="onboarding-orb orb-two"></div><div class="onboarding-logo">${icon('wind', 29)}</div></div><p class="eyebrow">ДОБРО ПОЖАЛОВАТЬ В «ВЫДОХ»</p><h2 id="onboarding-title">Твой путь.<br><em>Твой собственный ритм.</em></h2><p class="modal-lead">Подстроим поддержку под твою цель. Это займёт меньше минуты — настройки можно изменить позже.</p><form id="onboarding-form" class="onboarding-form"><label class="form-field"><span>С чего хочешь начать?</span><select name="strategy" id="onboard-strategy"><option value="quit" ${state.plan.strategy === 'quit' ? 'selected' : ''}>Полный отказ от никотина</option><option value="reduce" ${state.plan.strategy === 'reduce' ? 'selected' : ''}>Постепенное сокращение</option></select></label><label class="form-field"><span>Дата начала</span><input type="date" name="startDate" value="${esc(state.plan.startDate)}" max="${today()}" required></label><div class="form-field"><span>Что удобно отслеживать?</span><select name="unit"><option value="puffs">Затяжки</option><option value="sessions">Сеансы использования</option><option value="pods">Картриджи / устройства</option><option value="custom">Свой показатель</option></select></div><label class="form-field" id="onboard-target-field"><span>Цель на день <small>можно задать позже</small></span><input type="number" name="target" min="0" max="99999" placeholder="Не задана"></label><button type="submit" class="button button-primary full-button">Начать свой путь ${icon('arrow', 16)}</button></form><p class="onboarding-privacy">${icon('lock', 13)} Без аккаунта. Твои данные остаются на устройстве.</p><button type="button" class="onboarding-skip" data-action="onboarding-skip">Настроить позже</button></section></div>`;
 }
 
 function renderDayOverlay(date) {
@@ -951,7 +935,6 @@ function updateProfileField(field, value, date = null) {
       }
     } else if (key === 'reminderTime' && sub != null) state.preferences.reminderTimes[Number(sub)] = value;
     else if (key === 'sound') state.preferences.sound = value === true;
-    else if (key === 'theme') state.preferences.theme = ['light', 'dark', 'system'].includes(value) ? value : 'light';
   } else if (group === 'practiceSettings' && key === 'vibration') {
     state.practiceSettings.vibration = value === true;
   }
@@ -1409,7 +1392,7 @@ function setFieldValue(path, value, date) {
     showToast('Не удалось сохранить изменения. Текущие данные восстановлены. Проверь доступное место в хранилище.');
     return;
   }
-  if (path === 'plan.strategy' || path === 'tracking.unit' || path === 'preferences.remindersEnabled' || path === 'plan.startDate' || path === 'preferences.sound' || path === 'preferences.theme' || path === 'practiceSettings.vibration' || path.startsWith('profile.')) render();
+  if (path === 'plan.strategy' || path === 'tracking.unit' || path === 'preferences.remindersEnabled' || path === 'plan.startDate' || path === 'preferences.sound' || path === 'practiceSettings.vibration' || path.startsWith('profile.')) render();
   else showToast('Сохранено');
 }
 
@@ -1787,10 +1770,6 @@ homeTipTimer = setInterval(() => {
 }, 15000);
 
 render();
-const systemThemeQuery = window.matchMedia?.('(prefers-color-scheme: dark)');
-const onSystemThemeChange = () => { if ((state.preferences.theme || 'light') === 'system') applyTheme(); };
-systemThemeQuery?.addEventListener?.('change', onSystemThemeChange);
-if (!systemThemeQuery?.addEventListener) systemThemeQuery?.addListener?.(onSystemThemeChange);
 if (!state.onboardingComplete && loaded.source === 'fresh') {
   overlay = { type: 'onboarding' };
   renderOverlayOnly();

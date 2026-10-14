@@ -21,7 +21,7 @@ export function createDefaultState() {
     practiceSessions: [],
     practiceSettings: { favorites: ['natural'], durations: {}, vibration: false },
     completedTasks: {},
-    preferences: { remindersEnabled: false, reminderTimes: ['11:00', '16:00', '21:00'], sound: false, theme: 'light' },
+    preferences: { remindersEnabled: false, reminderTimes: ['11:00', '16:00', '21:00'], sound: false },
     finance: { weeklySpend: null, currency: '€', goalName: '', goalAmount: null },
     achievements: { celebrated: [], urgeCount: 0 },
     lastUseAt: null,
@@ -62,7 +62,6 @@ function sanitizeCurrent(input) {
   if (!safe.preferences.reminderTimes.length) safe.preferences.reminderTimes = base.preferences.reminderTimes.slice();
   safe.preferences.remindersEnabled = safe.preferences.remindersEnabled === true;
   safe.preferences.sound = safe.preferences.sound === true;
-  safe.preferences.theme = ['light', 'dark', 'system'].includes(safe.preferences.theme) ? safe.preferences.theme : 'light';
   safe.practiceSettings = { ...base.practiceSettings, ...(value.practiceSettings || {}) };
   const validPracticeIds = new Set(['calm-46', 'box', 'natural', 'slow-35', 'switching', 'diaphragmatic', 'craving-breath', 'equal-55', 'anchor-breath', 'body-scan']);
   safe.practiceSettings.favorites = Array.isArray(safe.practiceSettings.favorites) ? [...new Set(safe.practiceSettings.favorites.filter(id => validPracticeIds.has(id)))].slice(0, 20) : base.practiceSettings.favorites.slice();

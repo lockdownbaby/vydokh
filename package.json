@@ -1,9 +1,9 @@
 {
   "name": "vydokh-pwa",
-  "version": "2.0.1",
+  "version": "1.8.1",
   "private": true,
   "type": "module",
-  "description": "«Выдох» — приложение для отказа от никотина с фирменным wave-логотипом, дыхательными практиками и локальным профилем.",
+  "description": "«Выдох» — персональный трекер отказа от никотина с дыхательными практиками и локальным профилем, расширенными советами, оптимизированной анимацией и локальным профилем.",
   "scripts": {
     "check": "node --check src/app.js && node --check src/breath-visual.js && node --check src/storage.js && node --check src/domain.js && node --check src/content.js && node --check src/icons.js && node --check sw.js && node -e \"JSON.parse(require('fs').readFileSync('manifest.webmanifest', 'utf8'))\"",
     "serve": "python3 -m http.server 8000",

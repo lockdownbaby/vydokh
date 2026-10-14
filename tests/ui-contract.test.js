@@ -81,7 +81,7 @@ test('profile separates personal details from settings, and reset remains at the
   const settingsEnd = app.indexOf('function renderOverlay()', settingsStart);
   const settings = app.slice(settingsStart, settingsEnd);
   assert.ok(settings.lastIndexOf('data-action="reset-data"') > settings.lastIndexOf('data-action="export-data"'));
-  assert.ok(settings.includes('v2.0.1'));
+  assert.ok(settings.includes('v1.8.1'));
 });
 
 test('shared cards and panels have stronger outline tokens across the app', () => {
@@ -89,10 +89,4 @@ test('shared cards and panels have stronger outline tokens across the app', () =
   assert.match(styles, /\.health-insight-card/);
   assert.match(styles, /\.profile-hero-card/);
   assert.match(styles, /\.profile-settings-link/);
-});
-
-
-test('theme preference updates state inside the preferences handler and is included in the theme selection', () => {
-  assert.match(app, /data-field="preferences\.theme"/);
-  assert.match(app, /else if \(key === 'theme'\) state\.preferences\.theme = \['light', 'dark', 'system'\]/);
 });
